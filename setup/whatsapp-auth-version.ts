@@ -41,8 +41,8 @@ export async function resolveWaWebVersion(lookupSwJs: SwJsLookup): Promise<WaWeb
   }
 
   throw new Error(
-    `Could not get the current WhatsApp Web version (wppconnect.io: ${trackerProblem}; web.whatsapp.com: ${swJsProblem}). ` +
-      'WhatsApp rejects the older version built into Baileys, so linking would fail. ' +
+    `Could not fetch current WhatsApp Web version (wppconnect.io: ${trackerProblem}; web.whatsapp.com: ${swJsProblem}). ` +
+      'The version built into Baileys may be out of date, and WhatsApp refuses old versions before showing a QR or pairing code. ' +
       'Check that this machine can reach both sites, then run the step again in a few minutes.',
   );
 }

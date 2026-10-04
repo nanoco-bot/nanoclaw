@@ -48,6 +48,7 @@ describe('resolveWaWebVersion', () => {
 
   it.each([
     ['answers 429', new Response('Too Many Requests', { status: 429 })],
+    ['answers 429 with a version in the page', new Response(TRACKER_PAGE, { status: 429 })],
     ['is unreachable', offline],
     ['page has no version', new Response('<html>maintenance</html>')],
   ])('falls back to sw.js when the tracker %s', async (_case, answer) => {
@@ -69,7 +70,7 @@ describe('resolveWaWebVersion', () => {
       },
       (e: Error) => e,
     );
-    expect(err.message).toContain('Could not get the current WhatsApp Web version');
+    expect(err.message).toContain('Could not fetch current WhatsApp Web version');
     expect(err.message).toContain('wppconnect.io: HTTP 429; web.whatsapp.com: HTTP 429');
     expect(err.message).not.toContain('\n'); // the status block's ERROR field is one line
   });
@@ -80,6 +81,19 @@ describe('resolveWaWebVersion', () => {
 
     await expect(resolveWaWebVersion(lookup)).rejects.toThrow(
       'wppconnect.io: fetch failed (ENOTFOUND); web.whatsapp.com: fetch failed (ENOTFOUND)',
+    );
+  });
+
+  it('names a timeout and the plain error Baileys returns when sw.js has no version', async () => {
+    stubTracker(new DOMException('The operation was aborted due to timeout', 'TimeoutError'));
+    const lookup = swJsLookup({
+      version: BUNDLED,
+      isLatest: false,
+      error: { message: 'Could not find client revision in the fetched content' },
+    });
+
+    await expect(resolveWaWebVersion(lookup)).rejects.toThrow(
+      'wppconnect.io: The operation was aborted due to timeout; web.whatsapp.com: Could not find client revision in the fetched content',
     );
   });
 });
