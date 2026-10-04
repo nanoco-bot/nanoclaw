@@ -187,10 +187,6 @@ pnpm exec tsx setup/index.ts --step whatsapp-auth -- --method pairing-code --pho
 
 If the handshake fails (`logged_out` or a timeout), the code expired — clear
 `store/auth/` and run the step again for a fresh one. See Troubleshooting.
-If it fails with `Could not fetch current WhatsApp Web version`, check that this
-machine can reach wppconnect.io and web.whatsapp.com, then run the step again. If
-it fails with `WhatsApp closed the connection before linking`, clear `store/auth/`
-first: a requested pairing code leaves credentials behind.
 
 A successful link reports the number back as `bot_phone`. If it came back empty,
 the device never confirmed (an expired QR or pairing code), so don't restart or
