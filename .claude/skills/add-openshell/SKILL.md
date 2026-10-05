@@ -50,7 +50,7 @@ OpenShell allow and deny decisions happen in OpenShell, not in NanoClaw approval
 
 ## Setup UI (optional)
 
-`scripts/ui/` is a small operator web page for this install. It sets or replaces the relay's Claude credential, creates OpenShell providers, reviews and approves egress-rule proposals, and keeps a history of those decisions. It only runs the existing commands: `scripts/auth.ts`, the `openshell` binary, and the `ncl openshell-policy` resource. Install it as a service with `pnpm exec tsx setup/index.ts --step openshell-ui -- --enable`, which prints the URL. The page has no login of its own. Expose it only through a password-gated reverse proxy and keep its port firewalled. See `scripts/ui/README.md`.
+`scripts/ui/` is a small operator web page for this install. It sets or replaces the relay's Claude credential, creates OpenShell providers, reviews and approves egress-rule proposals, and keeps a history of those decisions. It only runs the existing commands: `scripts/auth.ts`, the `openshell` binary, and the `ncl openshell-policy` resource. Install it as a service with `pnpm exec tsx setup/index.ts --step openshell-ui -- --enable`, which prints the URL. It runs as a launchd agent on macOS and a systemd unit on Linux. The setup wizard offers it right after OpenShell sandboxing is enabled. The page has no login of its own. Expose it only through a password-gated reverse proxy and keep its port firewalled. See `scripts/ui/README.md`.
 
 ## Validate
 

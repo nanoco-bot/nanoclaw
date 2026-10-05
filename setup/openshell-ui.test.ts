@@ -13,8 +13,12 @@ import {
   disableUi,
   enableUi,
   parseUiArgs,
+  renderUiPlist,
   renderUiUnit,
   run,
+  serviceStatusFields,
+  uiLaunchdLocation,
+  uiServiceKind,
   uiUnitLocation,
   uiUnitName,
 } from './openshell-ui.js';
@@ -93,6 +97,7 @@ describe('arguments and port choice', () => {
 
 describe('enable / disable', () => {
   const deps = (calls: string[][], active = true) => ({
+    platform: () => 'linux',
     systemctl: (args: string[]) => {
       calls.push(args);
       if (args[0] === 'is-active' && !active) throw new Error('inactive');
@@ -140,5 +145,128 @@ describe('enable / disable', () => {
     await run([]);
     expect(fs.existsSync(path.join(root, '.env'))).toBe(false);
     expect(console.log).toHaveBeenCalledWith(expect.stringContaining('STATUS: skipped'));
+  });
+});
+
+describe('macOS: launchd', () => {
+  it('plist mirrors setup/service.ts’s: label = uiUnitName, tsx ProgramArguments as separate strings, logs, RunAtLoad/KeepAlive', () => {
+    const plist = renderUiPlist({
+      projectRoot: '/Users/asaf/nanoclaw',
+      nodePath: '/opt/homebrew/bin/node',
+      homeDir: '/Users/asaf',
+    });
+    expect(plist).toContain(`<key>Label</key>\n    <string>${uiUnitName('/Users/asaf/nanoclaw')}</string>`);
+    expect(plist).toContain(
+      [
+        '    <key>ProgramArguments</key>',
+        '    <array>',
+        '        <string>/opt/homebrew/bin/node</string>',
+        '        <string>--import</string>',
+        '        <string>file:///Users/asaf/nanoclaw/node_modules/tsx/dist/loader.mjs</string>',
+        `        <string>/Users/asaf/nanoclaw/${UI_SERVER_RELATIVE}</string>`,
+        '    </array>',
+      ].join('\n'),
+    );
+    expect(plist).toContain('<key>WorkingDirectory</key>\n    <string>/Users/asaf/nanoclaw</string>');
+    expect(plist).toContain('<key>RunAtLoad</key>\n    <true/>\n    <key>KeepAlive</key>\n    <true/>');
+    expect(plist).toContain('<string>/usr/local/bin:/usr/bin:/bin:/Users/asaf/.local/bin</string>');
+    expect(plist).toContain('<key>HOME</key>\n        <string>/Users/asaf</string>');
+    expect(plist).toContain(
+      '<key>StandardOutPath</key>\n    <string>/Users/asaf/nanoclaw/logs/openshell-ui.log</string>',
+    );
+    expect(plist).toContain(
+      '<key>StandardErrorPath</key>\n    <string>/Users/asaf/nanoclaw/logs/openshell-ui.error.log</string>',
+    );
+    expect(plist.startsWith('<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC')).toBe(true);
+  });
+
+  it('escapes XML-special characters in paths', () => {
+    const plist = renderUiPlist({ projectRoot: '/Users/a&b/<nc>', nodePath: '/n', homeDir: '/Users/a&b' });
+    expect(plist).toContain('<string>/Users/a&amp;b/&lt;nc&gt;</string>');
+    expect(plist).not.toMatch(/\/a&b/);
+  });
+
+  it('a user LaunchAgent under ~/Library/LaunchAgents, named outside peer-cleanup’s com.nanoclaw* scan; no systemd fields', () => {
+    const loc = uiLaunchdLocation('/Users/asaf/nanoclaw', { home: '/Users/asaf' });
+    expect(loc).toEqual({
+      kind: 'launchd',
+      label: uiUnitName('/Users/asaf/nanoclaw'),
+      plistPath: `/Users/asaf/Library/LaunchAgents/${uiUnitName('/Users/asaf/nanoclaw')}.plist`,
+    });
+    expect(`${loc.label}.plist`).not.toMatch(/^com\.nanoclaw.*\.plist$/);
+    expect(serviceStatusFields(loc)).toEqual({ SERVICE_TYPE: 'launchd', LABEL: loc.label, PLIST_PATH: loc.plistPath });
+  });
+
+  it('platform branching follows setup/service.ts: macOS → launchd, Linux+systemd → systemd, else refuse', () => {
+    expect(uiServiceKind({ platform: () => 'macos' })).toBe('launchd');
+    expect(uiServiceKind({ platform: () => 'linux', serviceManager: () => 'systemd' })).toBe('systemd');
+    expect(() => uiServiceKind({ platform: () => 'linux', serviceManager: () => 'none' })).toThrow(
+      /launchd on macOS or systemd on Linux/,
+    );
+    expect(() => uiServiceKind({ platform: () => 'unknown' })).toThrow(/neither/);
+  });
+
+  const macDeps = (calls: string[][], listed = true) => ({
+    platform: () => 'macos',
+    launchctl: (args: string[]) => {
+      calls.push(args);
+      if (args[0] === 'list')
+        return listed ? `PID\tStatus\tLabel\n123\t0\t${uiUnitName(root)}\n` : 'PID\tStatus\tLabel\n';
+      if (args[0] === 'unload' && !fs.existsSync(args[1])) throw new Error('Could not find specified service');
+      return '';
+    },
+    systemctl: () => {
+      throw new Error('systemctl must not be used on macOS');
+    },
+    uid: () => 501,
+    isFree: async () => true,
+    waitListening: async () => true,
+    home,
+    hostname: () => 'asafs-mac',
+    nodePath: () => '/opt/homebrew/bin/node',
+  });
+
+  it('enable: writes the plist, then unload → load → kickstart gui/<uid>/<label>, verified via launchctl list', async () => {
+    const calls: string[][] = [];
+    const result = await enableUi(root, 8790, macDeps(calls));
+    const loc = uiLaunchdLocation(root, { home });
+    expect(result).toMatchObject({ loc, port: 8790, active: true, listening: true, url: 'http://asafs-mac:8790/' });
+    expect(fs.readFileSync(loc.plistPath, 'utf8')).toContain(`<string>${root}/${UI_SERVER_RELATIVE}</string>`);
+    expect(fs.readFileSync(path.join(root, '.env'), 'utf8')).toBe('NANOCLAW_OPENSHELL_UI_PORT=8790\n');
+    expect(calls).toEqual([
+      ['list'], // is this install's UI already running? (port ownership)
+      ['unload', loc.plistPath],
+      ['load', loc.plistPath],
+      ['kickstart', `gui/501/${loc.label}`],
+      ['list'], // verify, as service.ts does
+    ]);
+  });
+
+  it('a failed unload (not loaded yet) is ignored; a label missing from launchctl list reports inactive', async () => {
+    const calls: string[][] = [];
+    const d = {
+      ...macDeps(calls, false),
+      launchctl: (args: string[]) => {
+        calls.push(args);
+        if (args[0] === 'unload') throw new Error('Could not find specified service');
+        return args[0] === 'list' ? 'PID\tStatus\tLabel\n' : '';
+      },
+    };
+    const result = await enableUi(root, 8790, d);
+    expect(result.active).toBe(false);
+    expect(calls.map((c) => c[0])).toEqual(['list', 'unload', 'load', 'kickstart', 'list']);
+  });
+
+  it('disable: launchctl unload, then the plist is removed', async () => {
+    const calls: string[][] = [];
+    const d = macDeps(calls);
+    await enableUi(root, 8790, d);
+    calls.length = 0;
+    const loc = uiLaunchdLocation(root, { home });
+    expect(disableUi(root, d)).toEqual({ loc, removed: true });
+    expect(fs.existsSync(loc.plistPath)).toBe(false);
+    expect(calls).toEqual([['unload', loc.plistPath]]);
+    // Again, with nothing installed: harmless.
+    expect(disableUi(root, d)).toEqual({ loc, removed: false });
   });
 });

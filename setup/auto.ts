@@ -17,8 +17,12 @@
  *   NANOCLAW_OPENSHELL     true/false: answer "Enable OpenShell sandboxing?"
  *                          without asking (with OPENSHELL_BIN / OPENSHELL_GATEWAY).
  *                          Unset and no TTY means no — Docker, nothing written.
+ *   NANOCLAW_OPENSHELL_UI  true/false: when OpenShell got enabled, answer "Also
+ *                          start the OpenShell setup web UI?" without asking
+ *                          (NANOCLAW_OPENSHELL_UI_PORT picks the port). Unset and
+ *                          no TTY means no.
  *   NANOCLAW_SKIP          comma-separated step names to skip
- *                          (environment|openshell|container|gateway|auth|mounts|
+ *                          (environment|openshell|openshell-ui|container|gateway|auth|mounts|
  *                           service|cli-agent|timezone|channel|
  *                           verify|first-chat)
  *
@@ -83,6 +87,7 @@ import { detectExistingInstall } from './uninstall/scan.js';
 import { detectRegisteredGroups, detectExistingDisplayName, readEnvKey } from './environment.js';
 import { installGateway, runGatewayAuth } from './gateways/install.js';
 import { OPENSHELL_DRIVER, OPENSHELL_GATEWAY_KIND, askOpenShell, readOpenShellEnv } from './openshell.js';
+import { askOpenShellUi } from './openshell-ui.js';
 import { loadGatewayCatalog } from './gateways/catalog.js';
 import { configuredGatewayKind, detectInstalledGateway } from './gateways/selection.js';
 import { getLaunchdLabel, getSystemdUnit } from '../src/install-slug.js';
@@ -268,6 +273,8 @@ async function main(): Promise<void> {
   // OpenShell sandboxing is opt-in. Asked before the image step because it
   // decides the runtime driver and, with it, the gateway installed below.
   const openshellEnabled = skip.has('openshell') ? false : await runOpenShellChoice();
+  // Only once OpenShell is on, and still its own yes/no: the operator UI is optional.
+  if (openshellEnabled && !skip.has('openshell-ui')) await runOpenShellUiChoice();
 
   if (!skip.has('container')) {
     p.log.message(
@@ -950,6 +957,42 @@ async function runOpenShellChoice(): Promise<boolean> {
     );
   }
   return true;
+}
+
+/**
+ * "Also start the OpenShell setup web UI?" — answered by NANOCLAW_OPENSHELL_UI
+ * (flag/env), else the operator (TTY only, default no); unanswered without a
+ * TTY means no. Yes runs `setup --step openshell-ui -- --enable` (its run(), as
+ * a quiet step like every other step here, so its output lands in
+ * logs/setup-steps/). A failure is a warning, never fatal: OpenShell itself is
+ * already configured and the UI can be started later. "No" never removes a
+ * UI an earlier run installed.
+ */
+async function runOpenShellUiChoice(): Promise<void> {
+  const flag = process.env.NANOCLAW_OPENSHELL_UI?.trim().toLowerCase();
+  const enable = flag === 'true' ? true : flag === 'false' ? false : process.stdin.isTTY ? await askOpenShellUi() : false;
+  setupLog.userInput('openshell_ui', String(enable));
+  if (!enable) return;
+
+  const args = ['--enable'];
+  const port = process.env.NANOCLAW_OPENSHELL_UI_PORT?.trim();
+  if (port) args.push('--port', port);
+  const res = await runQuietStep(
+    'openshell-ui',
+    { running: 'Starting the OpenShell setup UI…', done: 'OpenShell setup UI running.' },
+    args,
+  );
+  const url = res.terminal?.fields.URL;
+  if (res.ok && url) {
+    p.log.info(brandBody(`OpenShell setup UI: ${url} — it has no login of its own; expose it only through your reverse proxy.`));
+  } else {
+    p.log.warn(
+      brandBody(
+        "The OpenShell setup UI didn't start (see logs/setup-steps/). Setup continues; start it later with " +
+          '`pnpm exec tsx setup/index.ts --step openshell-ui -- --enable`.',
+      ),
+    );
+  }
 }
 
 // ─── first-chat step ───────────────────────────────────────────────────
