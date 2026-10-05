@@ -48,6 +48,10 @@ The relay reads `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN` from the NanoCl
 
 OpenShell allow and deny decisions happen in OpenShell, not in NanoClaw approval cards. The operator reviews them on the host with `ncl openshell-policy-list`, `-view`, `-approve`, `-reject` and `-add-rule`. Live proposals cover network rules only. Filesystem and process policy is fixed when a sandbox starts.
 
+## Setup UI (optional)
+
+`scripts/ui/` is a small operator web page for this install. It sets or replaces the relay's Claude credential, creates OpenShell providers, reviews and approves egress-rule proposals, and keeps a history of those decisions. It only runs the existing commands: `scripts/auth.ts`, the `openshell` binary, and the `ncl openshell-policy` resource. Install it as a service with `pnpm exec tsx setup/index.ts --step openshell-ui -- --enable`, which prints the URL. The page has no login of its own. Expose it only through a password-gated reverse proxy and keep its port firewalled. See `scripts/ui/README.md`.
+
 ## Validate
 
 ```nc:run effect:build
