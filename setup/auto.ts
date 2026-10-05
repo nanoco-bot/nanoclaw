@@ -14,8 +14,11 @@
  *                          "Terminal Agent".
  *   NANOCLAW_AGENT_PROVIDER preselect the setup provider and skip the picker
  *                          (for packaged flows). Example: claude.
+ *   NANOCLAW_OPENSHELL     true/false: answer "Enable OpenShell sandboxing?"
+ *                          without asking (with OPENSHELL_BIN / OPENSHELL_GATEWAY).
+ *                          Unset and no TTY means no — Docker, nothing written.
  *   NANOCLAW_SKIP          comma-separated step names to skip
- *                          (environment|container|gateway|auth|mounts|
+ *                          (environment|openshell|container|gateway|auth|mounts|
  *                           service|cli-agent|timezone|channel|
  *                           verify|first-chat)
  *
@@ -79,6 +82,7 @@ import { runUninstallFlow } from './uninstall/flow.js';
 import { detectExistingInstall } from './uninstall/scan.js';
 import { detectRegisteredGroups, detectExistingDisplayName, readEnvKey } from './environment.js';
 import { installGateway, runGatewayAuth } from './gateways/install.js';
+import { OPENSHELL_DRIVER, OPENSHELL_GATEWAY_KIND, askOpenShell, readOpenShellEnv } from './openshell.js';
 import { loadGatewayCatalog } from './gateways/catalog.js';
 import { configuredGatewayKind, detectInstalledGateway } from './gateways/selection.js';
 import { getLaunchdLabel, getSystemdUnit } from '../src/install-slug.js';
@@ -261,6 +265,10 @@ async function main(): Promise<void> {
     await runTemplateSetup(savedPickBridged, await detectRegisteredGroups(process.cwd()));
   }
 
+  // OpenShell sandboxing is opt-in. Asked before the image step because it
+  // decides the runtime driver and, with it, the gateway installed below.
+  const openshellEnabled = skip.has('openshell') ? false : await runOpenShellChoice();
+
   if (!skip.has('container')) {
     p.log.message(
       brandBody(dimWrap('Your assistant lives in its own sandbox. It can only see what you explicitly share.', 4)),
@@ -325,7 +333,11 @@ async function main(): Promise<void> {
     maybeReexecUnderSg();
   }
 
-  let gatewayKind = process.env.NANOCLAW_GATEWAY_PROVIDER?.trim().toLowerCase();
+  // OpenShell copies run the OpenShell gateway: its relay is the only model
+  // route a sandbox's policy allows (runOpenShellChoice refused a conflict).
+  let gatewayKind = openshellEnabled
+    ? OPENSHELL_GATEWAY_KIND
+    : process.env.NANOCLAW_GATEWAY_PROVIDER?.trim().toLowerCase();
   if (!skip.has('gateway')) {
     p.log.message(
       brandBody(
@@ -857,6 +869,76 @@ async function main(): Promise<void> {
   } else {
     p.outro(k.green("You're ready! Chat with `pnpm run chat hi`."));
   }
+}
+
+// ─── openshell step ─────────────────────────────────────────────────────
+
+/**
+ * "Enable OpenShell sandboxing?" — answered by, in order: NANOCLAW_OPENSHELL
+ * (flag/env), an earlier answer already in `.env`, the operator (TTY only).
+ * No answer means no, and no means nothing is written: Docker stays the
+ * runtime exactly as before this step existed.
+ */
+async function runOpenShellChoice(): Promise<boolean> {
+  const existing = readOpenShellEnv();
+  const alreadyEnabled = existing.NANOCLAW_RUNTIME_DRIVER?.trim().toLowerCase() === OPENSHELL_DRIVER;
+  const flag = process.env.NANOCLAW_OPENSHELL?.trim().toLowerCase();
+  let enable: boolean;
+  let bin = process.env.OPENSHELL_BIN?.trim() || existing.OPENSHELL_BIN;
+  let gateway = process.env.OPENSHELL_GATEWAY?.trim() || existing.OPENSHELL_GATEWAY;
+  if (flag === 'true' || flag === 'false') {
+    enable = flag === 'true';
+  } else if (alreadyEnabled) {
+    enable = true;
+  } else if (process.stdin.isTTY) {
+    const answers = await askOpenShell(existing);
+    enable = answers.enable;
+    bin = answers.bin ?? bin;
+    gateway = answers.gateway ?? gateway;
+  } else {
+    enable = false;
+  }
+  setupLog.userInput('openshell', String(enable));
+
+  if (!enable) {
+    if (alreadyEnabled && flag === 'false') {
+      const res = await runQuietStep(
+        'openshell',
+        { running: 'Switching back to Docker sandboxing…', done: 'Docker sandboxing restored.' },
+        ['--disable'],
+      );
+      if (!res.ok) await fail('openshell', "Couldn't switch back to Docker sandboxing.");
+    }
+    return false;
+  }
+
+  const chosenGateway = process.env.NANOCLAW_GATEWAY_PROVIDER?.trim().toLowerCase();
+  if (chosenGateway && chosenGateway !== OPENSHELL_GATEWAY_KIND) {
+    await fail(
+      'openshell',
+      `OpenShell sandboxing uses the OpenShell gateway, but '${chosenGateway}' was selected.`,
+      'Re-run setup without a gateway selection, or without --openshell.',
+    );
+  }
+  const args = ['--enable', '--no-gateway'];
+  if (bin) args.push('--bin', bin);
+  if (gateway) args.push('--gateway', gateway);
+  const res = await runQuietStep(
+    'openshell',
+    { running: 'Configuring OpenShell sandboxing…', done: 'OpenShell sandboxing enabled.' },
+    args,
+  );
+  if (!res.ok) {
+    await fail('openshell', "Couldn't enable OpenShell sandboxing.", 'See logs/setup-steps/ for details, then retry.');
+  }
+  if (Number(res.terminal?.fields.WARNINGS ?? 0) > 0) {
+    p.log.warn(
+      brandBody(
+        `The openshell CLI was not found at ${res.terminal?.fields.OPENSHELL_BIN}. Install it before starting NanoClaw.`,
+      ),
+    );
+  }
+  return true;
 }
 
 // ─── first-chat step ───────────────────────────────────────────────────
