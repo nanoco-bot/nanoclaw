@@ -308,6 +308,13 @@ async function main(): Promise<void> {
           'Log out and back in (or run `newgrp docker` in a new shell), then retry.',
         );
       }
+      if (err === 'openshell_image_failed') {
+        await fail(
+          'container',
+          "Couldn't prepare the OpenShell version of the sandbox image.",
+          'See logs/setup-steps/ for the docker output, then retry (`pnpm exec tsx setup/lib/openshell-image.ts`).',
+        );
+      }
       // The pull path fails for reasons a build never has, and "prune the build
       // cache" is useless advice for both of them.
       if (err === 'image_ref_not_configured') {
@@ -752,7 +759,11 @@ async function main(): Promise<void> {
     if (!res.ok) {
       const notes: string[] = [];
       if (res.terminal?.fields.CREDENTIALS !== 'configured') {
-        notes.push("• Your Claude account isn't connected. Re-run setup and try again.");
+        notes.push(
+          res.terminal?.fields.CREDENTIAL_SOURCE
+            ? "• The OpenShell model relay has no Claude credential, so agents can't reply. Run `pnpm exec tsx setup/index.ts --step gateway-auth`."
+            : "• Your Claude account isn't connected. Re-run setup and try again.",
+        );
       }
       const service = res.terminal?.fields.SERVICE;
       if (service === 'running_other_checkout') {
@@ -931,7 +942,7 @@ async function runOpenShellChoice(): Promise<boolean> {
   if (!res.ok) {
     await fail('openshell', "Couldn't enable OpenShell sandboxing.", 'See logs/setup-steps/ for details, then retry.');
   }
-  if (Number(res.terminal?.fields.WARNINGS ?? 0) > 0) {
+  if (res.terminal?.fields.CLI_FOUND === 'false') {
     p.log.warn(
       brandBody(
         `The openshell CLI was not found at ${res.terminal?.fields.OPENSHELL_BIN}. Install it before starting NanoClaw.`,

@@ -46,3 +46,31 @@ export function getContainerImageBase(projectRoot?: string): string {
 export function getDefaultContainerImage(projectRoot?: string): string {
   return `${getContainerImageBase(projectRoot)}:latest`;
 }
+
+/**
+ * Tag of the OpenShell-compatible agent image, derived from the base image by
+ * setup (`setup/lib/openshell-image.ts`). OpenShell refuses any bind mount that
+ * covers the image's WORKDIR; the stock image's WORKDIR is /workspace/group and
+ * the session is always mounted at /workspace, so OpenShell needs its own tag.
+ */
+export function getOpenShellContainerImage(projectRoot?: string): string {
+  return `${getContainerImageBase(projectRoot)}:openshell`;
+}
+
+/**
+ * The agent image sessions spawn from (before any per-group `image_tag`).
+ * An explicit CONTAINER_IMAGE always wins; otherwise the runtime driver picks
+ * the base (`:latest`) or the OpenShell-derived (`:openshell`) tag. Callers
+ * pass values already resolved with process-env-over-.env precedence.
+ */
+export function resolveContainerImage(
+  settings: { CONTAINER_IMAGE?: string; CONTAINER_IMAGE_BASE?: string; NANOCLAW_RUNTIME_DRIVER?: string },
+  projectRoot?: string,
+): string {
+  const explicit = settings.CONTAINER_IMAGE?.trim();
+  if (explicit) return explicit;
+  const base = settings.CONTAINER_IMAGE_BASE?.trim() || getContainerImageBase(projectRoot);
+  return settings.NANOCLAW_RUNTIME_DRIVER?.trim().toLowerCase() === 'openshell'
+    ? `${base}:openshell`
+    : `${base}:latest`;
+}

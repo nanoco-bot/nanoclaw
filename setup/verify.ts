@@ -13,6 +13,7 @@ import { readEnvFile } from '../src/env.js';
 import { log } from '../src/log.js';
 import { getLaunchdLabel, getSystemdUnit } from '../src/install-slug.js';
 import { inspectCentralDb } from './central-db-inspection.js';
+import { inspectServiceCredential, unitLocation, type ServiceCredential } from './lib/openshell-credential.js';
 import { inspectAgentImage, readImageSource } from './lib/registry-state.js';
 import { getPlatform, getServiceManager, hasSystemd, isRoot } from './platform.js';
 import { emitStatus } from './status.js';
@@ -125,16 +126,7 @@ export async function run(_args: string[]): Promise<void> {
   }
 
   // 3. Check credentials
-  let credentials = 'missing';
-  const envFile = path.join(projectRoot, '.env');
-  if (fs.existsSync(envFile)) {
-    const envContent = fs.readFileSync(envFile, 'utf-8');
-    if (
-      /^(CLAUDE_CODE_OAUTH_TOKEN|ANTHROPIC_API_KEY|ANTHROPIC_AUTH_TOKEN|NANOCLAW_GATEWAY_PROVIDER)=/m.test(envContent)
-    ) {
-      credentials = 'configured';
-    }
-  }
+  const { credentials, credentialSource } = checkCredentials(projectRoot);
 
   // 4. Check channel auth (detect configured channels by credentials)
   const envVars = readEnvFile([
@@ -260,6 +252,7 @@ export async function run(_args: string[]): Promise<void> {
     SERVICE: service,
     CONTAINER_RUNTIME: containerRuntime,
     CREDENTIALS: credentials,
+    ...(credentialSource ? { CREDENTIAL_SOURCE: credentialSource } : {}),
     CONFIGURED_CHANNELS: configuredChannels.join(','),
     CHANNEL_AUTH: JSON.stringify(channelAuth),
     REGISTERED_GROUPS: registeredGroups,
@@ -277,6 +270,45 @@ export async function run(_args: string[]): Promise<void> {
   });
 
   if (status === 'failed') process.exit(1);
+}
+
+/**
+ * Is there a model credential where the selected gateway actually reads it?
+ *
+ * For the OpenShell gateway that is the host service's own environment (the
+ * relay reads ANTHROPIC_API_KEY / CLAUDE_CODE_OAUTH_TOKEN from process.env),
+ * so the answer comes from inspectServiceCredential — a gateway name in .env
+ * says nothing about whether the relay has a key. Other gateways keep the
+ * existing .env-based check.
+ */
+export function checkCredentials(
+  projectRoot: string,
+  inspect: (root: string) => ServiceCredential = (root) => inspectServiceCredential(unitLocation(root)),
+): { credentials: 'configured' | 'missing'; credentialSource: string } {
+  const gatewayKind = (
+    process.env.NANOCLAW_GATEWAY_PROVIDER ||
+    readEnvFile(['NANOCLAW_GATEWAY_PROVIDER'], projectRoot).NANOCLAW_GATEWAY_PROVIDER ||
+    ''
+  )
+    .trim()
+    .toLowerCase();
+  if (gatewayKind === 'openshell') {
+    const found = inspect(projectRoot);
+    return {
+      credentials: found.kind === 'none' ? 'missing' : 'configured',
+      credentialSource: `${found.source}:${found.kind}`,
+    };
+  }
+  const envFile = path.join(projectRoot, '.env');
+  if (fs.existsSync(envFile)) {
+    const envContent = fs.readFileSync(envFile, 'utf-8');
+    if (
+      /^(CLAUDE_CODE_OAUTH_TOKEN|ANTHROPIC_API_KEY|ANTHROPIC_AUTH_TOKEN|NANOCLAW_GATEWAY_PROVIDER)=/m.test(envContent)
+    ) {
+      return { credentials: 'configured', credentialSource: '' };
+    }
+  }
+  return { credentials: 'missing', credentialSource: '' };
 }
 
 /**

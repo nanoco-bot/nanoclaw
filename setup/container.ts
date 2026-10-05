@@ -9,6 +9,7 @@ import { setTimeout as sleep } from 'timers/promises';
 
 import { log } from '../src/log.js';
 import { getDefaultContainerImage } from '../src/install-slug.js';
+import { buildOpenShellImage, openShellConfigured } from './lib/openshell-image.js';
 import { commandExists, getPlatform } from './platform.js';
 import { emitStatus } from './status.js';
 
@@ -404,6 +405,27 @@ export async function run(args: string[]): Promise<void> {
     }
   }
 
+  // On the openshell runtime driver the base image cannot be used as-is (its
+  // WORKDIR sits under the /workspace mount, which OpenShell refuses), so the
+  // derived `:openshell` image is part of acquiring the image — on both the
+  // build and the pull path. src/config.ts selects it on that driver.
+  let openshellImage = '';
+  if (buildOk && testOk && openShellConfigured(projectRoot)) {
+    const derived = buildOpenShellImage(projectRoot);
+    if (derived.ok) {
+      openshellImage = derived.image;
+      log.info('OpenShell image built', { image: derived.image, workdir: derived.workdir, base: derived.base });
+    } else {
+      log.error('OpenShell image build failed', {
+        image: derived.image,
+        reason: derived.reason,
+        detail: derived.detail,
+      });
+      errorCode = 'openshell_image_failed';
+      testOk = false;
+    }
+  }
+
   const status = buildOk && testOk ? 'success' : 'failed';
 
   emitStatus('SETUP_CONTAINER', {
@@ -413,6 +435,7 @@ export async function run(args: string[]): Promise<void> {
     ...(digest ? { DIGEST: digest } : {}),
     BUILD_OK: buildOk,
     TEST_OK: testOk,
+    ...(openshellImage ? { OPENSHELL_IMAGE: openshellImage } : {}),
     STATUS: status,
     ...(errorCode ? { ERROR: errorCode } : {}),
     LOG: 'logs/setup.log',

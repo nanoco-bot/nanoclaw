@@ -15,9 +15,9 @@ import {
 
 describe('openshell gateway core', () => {
   it('contributes the OneCLI-style model env, acceptable to core', () => {
-    const env = contributionEnv(openShellGatewayConfig({}));
+    const env = contributionEnv(openShellGatewayConfig({ NANOCLAW_OPENSHELL_MODEL_RELAY_PORT: '23456' }));
     expect(env).toEqual({
-      ANTHROPIC_BASE_URL: `http://${DEFAULTS.hostAlias}:${DEFAULTS.relayPort}`,
+      ANTHROPIC_BASE_URL: `http://${DEFAULTS.hostAlias}:23456`,
       ANTHROPIC_AUTH_TOKEN: 'gateway-managed',
     });
     // The contributed lane is exempt from the key-NAME check but never from the
@@ -36,8 +36,17 @@ describe('openshell gateway core', () => {
     expect(() => openShellGatewayConfig({ NANOCLAW_OPENSHELL_MODEL_RELAY_PORT: '99999' })).toThrow(
       /must be a TCP port/,
     );
-    expect(() => openShellGatewayConfig({ NANOCLAW_OPENSHELL_MODEL_UPSTREAM: 'ftp://x' })).toThrow(/must be http/);
-    expect(() => openShellGatewayConfig({ NANOCLAW_OPENSHELL_MODEL_UPSTREAM: 'not a url' })).toThrow(/is not a URL/);
+    const port = { NANOCLAW_OPENSHELL_MODEL_RELAY_PORT: '23456' };
+    expect(() => openShellGatewayConfig({ ...port, NANOCLAW_OPENSHELL_MODEL_UPSTREAM: 'ftp://x' })).toThrow(
+      /must be http/,
+    );
+    expect(() => openShellGatewayConfig({ ...port, NANOCLAW_OPENSHELL_MODEL_UPSTREAM: 'not a url' })).toThrow(
+      /is not a URL/,
+    );
+  });
+
+  it('has no fixed relay port: an unset port is a configuration error, not a shared default', () => {
+    expect(() => openShellGatewayConfig({})).toThrow(/NANOCLAW_OPENSHELL_MODEL_RELAY_PORT is not set/);
   });
 
   it('relay drops the agent-side placeholder auth and injects the host credential', () => {

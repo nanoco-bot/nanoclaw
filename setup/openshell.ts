@@ -25,7 +25,10 @@ import * as p from '@clack/prompts';
 
 import { readEnvFile } from '../src/env.js';
 import { log } from '../src/log.js';
+import { getInstallSlug } from '../src/install-slug.js';
 import { installGateway } from './gateways/install.js';
+import { buildOpenShellImage, type DockerRunner, realDocker } from './lib/openshell-image.js';
+import { RELAY_PORT_KEY, relayPortEnv, selectRelayPort, type RelayPortChoice } from './lib/openshell-relay-port.js';
 import { resolveBinary } from './lib/resolve-binary.js';
 import { removeEnvVar, upsertEnvVars } from './set-env.js';
 import { emitStatus } from './status.js';
@@ -38,12 +41,14 @@ export const OPENSHELL_GATEWAY_KIND = 'openshell';
  * the POC (nanoco-bot/poc-nvidia-openshell): the runner lives under /app with
  * pnpm/bun tooling under /pnpm and /opt; HOME is /home/node. The model relay
  * egress rule lets only the agent runtimes reach the host alias + relay port.
+ * The relay PORT is not a default: it is chosen per install (selectRelayPort)
+ * and written to both NANOCLAW_OPENSHELL_MODEL_RELAY_PORT and
+ * NANOCLAW_OPENSHELL_GATEWAY_PORTS from one value, every time.
  */
 export const OPENSHELL_POLICY_DEFAULTS: Readonly<Record<string, string>> = {
   NANOCLAW_OPENSHELL_BASE_RO: '/usr,/bin,/lib,/lib64,/etc,/app,/pnpm,/opt',
   NANOCLAW_OPENSHELL_BASE_RW: '/tmp,/home/node',
   NANOCLAW_OPENSHELL_GATEWAY_HOST: 'host.openshell.internal',
-  NANOCLAW_OPENSHELL_GATEWAY_PORTS: '18790',
   NANOCLAW_OPENSHELL_GATEWAY_BINARIES: '/usr/local/bin/bun,/usr/local/bin/node',
 };
 
@@ -52,6 +57,8 @@ const READ_KEYS = [
   'NANOCLAW_GATEWAY_PROVIDER',
   'OPENSHELL_BIN',
   'OPENSHELL_GATEWAY',
+  RELAY_PORT_KEY,
+  'NANOCLAW_OPENSHELL_GATEWAY_PORTS',
   ...Object.keys(OPENSHELL_POLICY_DEFAULTS),
 ];
 
@@ -72,6 +79,7 @@ export interface OpenShellPlan {
 export function planOpenShellEnv(
   answers: OpenShellAnswers,
   existing: Record<string, string | undefined>,
+  relayPort: number,
   which: (bin: string) => string | undefined = (bin) => resolveBinary(bin),
 ): OpenShellPlan {
   const warnings: string[] = [];
@@ -91,6 +99,8 @@ export function planOpenShellEnv(
   for (const [key, value] of Object.entries(OPENSHELL_POLICY_DEFAULTS)) {
     if (!existing[key]?.trim()) writes[key] = value;
   }
+  // Relay port and egress allow-list port: always both, always the same value.
+  Object.assign(writes, relayPortEnv(relayPort));
   return { writes, warnings };
 }
 
@@ -134,12 +144,43 @@ export function readOpenShellEnv(projectRoot = process.cwd()): Record<string, st
   return readEnvFile(READ_KEYS, projectRoot);
 }
 
-/** Enable: write the plan atomically. Returns the plan for reporting. */
-export function enableOpenShell(answers: OpenShellAnswers, projectRoot = process.cwd()): OpenShellPlan {
-  const plan = planOpenShellEnv(answers, readOpenShellEnv(projectRoot));
+export interface EnableResult extends OpenShellPlan {
+  port: RelayPortChoice;
+  /** The derived `:openshell` image, built now when a base image already exists. */
+  image:
+    | { status: 'built'; tag: string }
+    | { status: 'pending'; detail: string }
+    | { status: 'failed'; detail: string };
+}
+
+/**
+ * Enable: pick this install's relay port, write the plan atomically, and
+ * derive the OpenShell image if the base is already here (otherwise the
+ * `container` step builds it, since the driver is now configured).
+ */
+export async function enableOpenShell(
+  answers: OpenShellAnswers,
+  projectRoot = process.cwd(),
+  deps: { docker?: DockerRunner; selectPort?: typeof selectRelayPort } = {},
+): Promise<EnableResult> {
+  const existing = readOpenShellEnv(projectRoot);
+  const port = await (deps.selectPort ?? selectRelayPort)(existing, getInstallSlug(projectRoot));
+  const plan = planOpenShellEnv(answers, existing, port.port);
+  if (port.replaced) {
+    plan.warnings.push(
+      `OpenShell relay port ${port.replaced.port} ${port.replaced.why === 'taken' ? 'is in use by another process' : 'was the shared legacy default'}; this install now uses ${port.port}. Restart NanoClaw for it to take effect.`,
+    );
+  }
   upsertEnvVars(plan.writes, projectRoot);
-  log.info('OpenShell sandboxing enabled', { keys: Object.keys(plan.writes) });
-  return plan;
+  log.info('OpenShell sandboxing enabled', { keys: Object.keys(plan.writes), relayPort: port.port });
+
+  let image: EnableResult['image'];
+  const docker = deps.docker ?? realDocker;
+  const derived = buildOpenShellImage(projectRoot, docker);
+  if (derived.ok) image = { status: 'built', tag: derived.image };
+  else if (derived.reason === 'base-missing') image = { status: 'pending', detail: derived.detail };
+  else image = { status: 'failed', detail: derived.detail };
+  return { ...plan, port, image };
 }
 
 /** Disable: back to the Docker default. Leaves OPENSHELL_* settings for a later re-enable. */
@@ -184,8 +225,17 @@ export async function run(args: string[]): Promise<void> {
     return;
   }
 
-  const plan = enableOpenShell(answers);
+  const plan = await enableOpenShell(answers);
   for (const warning of plan.warnings) log.warn(warning);
+  if (plan.image.status === 'failed') {
+    emitStatus('OPENSHELL', {
+      STATUS: 'failed',
+      ENABLED: true,
+      ERROR: 'openshell_image_failed',
+      DETAIL: plan.image.detail.split('\n').slice(-1)[0] ?? '',
+    });
+    process.exit(1);
+  }
   let gateway = 'deferred';
   if (parsed.installGateway) {
     const entry = await installGateway(OPENSHELL_GATEWAY_KIND);
@@ -196,7 +246,11 @@ export async function run(args: string[]): Promise<void> {
     ENABLED: true,
     RUNTIME_DRIVER: OPENSHELL_DRIVER,
     OPENSHELL_BIN: plan.writes.OPENSHELL_BIN,
+    RELAY_PORT: plan.port.port,
+    // 'pending' = no base image yet; the container step derives it.
+    OPENSHELL_IMAGE: plan.image.status === 'built' ? plan.image.tag : plan.image.status,
     GATEWAY: gateway,
+    CLI_FOUND: !plan.warnings.some((w) => w.startsWith('openshell CLI not found')),
     WARNINGS: plan.warnings.length,
   });
 }

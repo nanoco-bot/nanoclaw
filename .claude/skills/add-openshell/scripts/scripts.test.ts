@@ -11,7 +11,8 @@ import { preflight, resolveBinary } from './preflight.js';
 const READY = {
   NANOCLAW_RUNTIME_DRIVER: 'openshell',
   OPENSHELL_BIN: '/opt/openshell/bin/openshell',
-  NANOCLAW_OPENSHELL_GATEWAY_PORTS: '18790',
+  NANOCLAW_OPENSHELL_MODEL_RELAY_PORT: '23456',
+  NANOCLAW_OPENSHELL_GATEWAY_PORTS: '23456',
   NANOCLAW_OPENSHELL_GATEWAY_BINARIES: '/usr/local/bin/bun,/usr/local/bin/node',
   NANOCLAW_OPENSHELL_GATEWAY_HOST: 'host.openshell.internal',
 };
@@ -32,19 +33,27 @@ describe('openshell gateway preflight', () => {
     expect(errors.join('\n')).toMatch(/requires NANOCLAW_RUNTIME_DRIVER=openshell.*'docker'/);
   });
 
-  it('refuses a policy that would block the model relay', () => {
+  it('requires an install-specific relay port (no fixed default)', () => {
+    const { NANOCLAW_OPENSHELL_MODEL_RELAY_PORT: _unset, ...noPort } = READY;
+    expect(preflight(noPort, found).errors.join()).toMatch(/NANOCLAW_OPENSHELL_MODEL_RELAY_PORT is not set/);
+  });
+
+  it('refuses an egress allow-list that drifted from the relay port', () => {
     expect(preflight({ ...READY, NANOCLAW_OPENSHELL_GATEWAY_PORTS: '9999' }, found).errors.join()).toMatch(
-      /include 18790/,
+      /must be exactly the relay port 23456/,
     );
-    expect(
-      preflight(
-        { ...READY, NANOCLAW_OPENSHELL_MODEL_RELAY_PORT: '9999', NANOCLAW_OPENSHELL_GATEWAY_PORTS: '9999' },
-        found,
-      ).errors,
-    ).toEqual([]);
+    expect(preflight({ ...READY, NANOCLAW_OPENSHELL_GATEWAY_PORTS: '23456,9999' }, found).errors.join()).toMatch(
+      /must be exactly/,
+    );
     expect(preflight({ ...READY, NANOCLAW_OPENSHELL_GATEWAY_HOST: 'elsewhere' }, found).errors.join()).toMatch(
       /does not match the relay alias/,
     );
+  });
+
+  it('fails on a relay port held by another process; accepts this install’s own relay', () => {
+    expect(preflight(READY, found, 'taken').errors.join()).toMatch(/already in use by another process/);
+    expect(preflight(READY, found, 'ours').errors).toEqual([]);
+    expect(preflight(READY, found, 'free').errors).toEqual([]);
   });
 
   it('only warns about a missing or PATH-relative CLI', () => {

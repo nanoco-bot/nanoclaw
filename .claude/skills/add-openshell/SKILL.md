@@ -11,7 +11,7 @@ Enable the driver first. `pnpm exec tsx setup/index.ts --step openshell` asks fo
 
 ## Check the configuration
 
-Before anything is copied, the check confirms this copy runs the `openshell` driver and that the sandbox policy lets agents reach the relay port. It warns when the `openshell` CLI cannot be found; install it from https://github.com/NVIDIA/OpenShell and point `OPENSHELL_BIN` at its absolute path, because the background service has a fixed `PATH`.
+Before anything is copied, the check confirms this copy runs the `openshell` driver, that the relay port is set and matches the sandbox egress allow-list, and that no other process holds it. It warns when the `openshell` CLI cannot be found; install it from https://github.com/NVIDIA/OpenShell and point `OPENSHELL_BIN` at its absolute path, because the background service has a fixed `PATH`.
 
 ```nc:run effect:check
 pnpm exec tsx .claude/skills/add-openshell/scripts/setup.ts
@@ -40,7 +40,9 @@ import './openshell.js';
 
 ## Model credentials
 
-The relay listens on `127.0.0.1` (port `NANOCLAW_OPENSHELL_MODEL_RELAY_PORT`, default `18790`) and sandboxes reach it as `host.openshell.internal`. It reads `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN` from the NanoClaw service environment at request time. Put the credential in the service environment (`systemctl --user edit <unit>`), not in `.env`. Agents receive only `ANTHROPIC_AUTH_TOKEN=gateway-managed`. Only the Claude provider is supported.
+The relay listens on `127.0.0.1` at this install's own port, `NANOCLAW_OPENSHELL_MODEL_RELAY_PORT`. Setup picks a free port per install and writes the same value to `NANOCLAW_OPENSHELL_GATEWAY_PORTS`, the sandbox egress allow-list. Sandboxes reach the relay as `host.openshell.internal`. If the relay cannot bind its port, the gateway reports itself unavailable and NanoClaw admits no sessions, so a sandbox is never pointed at a port another copy holds.
+
+The relay reads `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN` from the NanoClaw service environment. The sign-in step (`scripts/auth.ts`) writes it to this install's systemd drop-in, `<unit>.service.d/credential.conf`, with mode `0600`. It is never written to `.env`. Agents receive only `ANTHROPIC_AUTH_TOKEN=gateway-managed`. Only the Claude provider is supported, on Linux with systemd. Without a credential, sessions are refused and the chat is told why.
 
 ## Policy operations
 

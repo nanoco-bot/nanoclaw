@@ -4,6 +4,16 @@
  * labor). Requires the `openshell` session driver (NANOCLAW_RUNTIME_DRIVER=openshell):
  * the relay address it contributes only resolves inside an OpenShell sandbox.
  *
+ * Relay lifetime = approval-subscription lifetime. Core treats a subscription
+ * that fails or ends as "gateway unavailable": it stops sessions, closes
+ * session admission, and retries the subscription with backoff. So:
+ *   - subscribe() binds the relay on this install's port and stays pending
+ *     only while it is listening;
+ *   - a bind failure (EADDRINUSE: another copy holds the port) fails the
+ *     subscription, so NO session is admitted pointing at a port this process
+ *     does not own;
+ *   - ensure() re-checks that the relay it contributes is the one listening.
+ *
  * Scope, stated plainly:
  *  - no approval holds: OpenShell enforces allow/deny itself, and its live
  *    rule proposals are operated with `ncl openshell-policy-*`, not through
@@ -14,20 +24,30 @@
 import http from 'node:http';
 import https from 'node:https';
 
+import { INSTALL_SLUG } from '../config.js';
 import { readEnvFile } from '../env.js';
 import { log } from '../log.js';
 
 import { registerGatewayProvider } from './gateway-provider-registry.js';
 import {
   OPENSHELL_GATEWAY_SETTING_KEYS,
+  RELAY_IDENTITY_PATH,
   contributionEnv,
   modelCredentialFromEnv,
   openShellGatewayConfig,
   relayHeaders,
+  userFacingError,
   type OpenShellGatewayConfig,
 } from './openshell-core.js';
 
-let relay: http.Server | null = null;
+interface RelayState {
+  server: http.Server;
+  port: number;
+  /** Settles when the server stops listening (closed or errored). */
+  closed: Promise<void>;
+}
+
+let relay: RelayState | null = null;
 
 /** Non-secret settings: process.env wins, then `.env`. */
 function settings(): Record<string, string | undefined> {
@@ -38,13 +58,16 @@ function settings(): Record<string, string | undefined> {
   return merged;
 }
 
-function startModelRelay(cfg: OpenShellGatewayConfig): void {
-  if (relay) return;
+function handler(cfg: OpenShellGatewayConfig): http.RequestListener {
   const upstream = new URL(cfg.modelUpstream);
   const client = upstream.protocol === 'https:' ? https : http;
-  relay = http.createServer((req, res) => {
-    // Read per request so a credential rotated in the service environment
-    // takes effect on restart without re-reading anything at import time.
+  return (req, res) => {
+    if (req.method === 'GET' && req.url === RELAY_IDENTITY_PATH) {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ install: INSTALL_SLUG }));
+      return;
+    }
+    // Read per request: the credential lives in the service environment.
     const cred = modelCredentialFromEnv(process.env);
     if (cred.kind === 'none') {
       res.writeHead(503, { 'content-type': 'application/json' });
@@ -82,30 +105,55 @@ function startModelRelay(cfg: OpenShellGatewayConfig): void {
       );
     });
     req.pipe(up);
-  });
-  // Loopback only: the OpenShell supervisor reaches it as the host alias;
-  // nothing off-box can talk to the credential injector.
-  relay.on('error', (err) => {
-    // Never take the host down (an unhandled 'error' on a server is an
-    // uncaught exception). Sessions fail their model calls and say so; the
-    // next ensure() retries the bind.
-    log.error('OpenShell gateway: model relay failed to listen', { port: cfg.relayPort, err: err.message });
-    relay = null;
-  });
-  relay.listen(cfg.relayPort, '127.0.0.1', () => {
-    log.info('OpenShell gateway: model relay listening', {
-      address: `127.0.0.1:${cfg.relayPort}`,
-      upstream: upstream.origin,
-      credential: modelCredentialFromEnv(process.env).kind, // kind only — never the value
+  };
+}
+
+/** Bind the relay on loopback; rejects (and leaves no relay) when the port cannot be bound. */
+function startModelRelay(cfg: OpenShellGatewayConfig): Promise<RelayState> {
+  if (relay) return Promise.resolve(relay);
+  return new Promise((resolve, reject) => {
+    const server = http.createServer(handler(cfg));
+    let settleClosed!: () => void;
+    const closed = new Promise<void>((r) => (settleClosed = r));
+    server.once('error', (err) => {
+      log.error('OpenShell gateway: model relay failed to listen; refusing sessions until it can', {
+        port: cfg.relayPort,
+        err: err.message,
+      });
+      reject(err);
+    });
+    server.listen(cfg.relayPort, '127.0.0.1', () => {
+      const state: RelayState = { server, port: cfg.relayPort, closed };
+      relay = state;
+      server.on('error', (err) => {
+        log.error('OpenShell gateway: model relay error', { port: cfg.relayPort, err: err.message });
+        if (relay === state) relay = null;
+        settleClosed();
+      });
+      server.on('close', () => {
+        if (relay === state) relay = null;
+        settleClosed();
+      });
+      log.info('OpenShell gateway: model relay listening', {
+        address: `127.0.0.1:${cfg.relayPort}`,
+        upstream: new URL(cfg.modelUpstream).origin,
+        credential: modelCredentialFromEnv(process.env).kind, // kind only — never the value
+      });
+      resolve(state);
     });
   });
 }
 
-/** Close the relay (tests; the host simply exits). */
+/** Close the relay (subscription abort, tests). */
 export async function stopModelRelay(): Promise<void> {
-  const server = relay;
+  const state = relay;
   relay = null;
-  if (server) await new Promise<void>((resolve) => server.close(() => resolve()));
+  if (state) await new Promise<void>((resolve) => state.server.close(() => resolve()));
+}
+
+/** Test seam: the port the relay is listening on, if any. */
+export function relayListeningPort(): number | undefined {
+  return relay?.port;
 }
 
 registerGatewayProvider({
@@ -124,7 +172,22 @@ registerGatewayProvider({
         );
       }
       const cfg = openShellGatewayConfig(settings());
-      startModelRelay(cfg);
+      // Never point a sandbox at a port this process does not hold: if the
+      // relay is down, or bound to a port the config no longer names (setup
+      // re-run without a restart), the sandbox would reach whatever owns it.
+      if (!relay || relay.port !== cfg.relayPort) {
+        throw userFacingError(
+          `OpenShell model relay is not listening on configured port ${cfg.relayPort}` +
+            (relay ? ` (listening on ${relay.port}; restart NanoClaw)` : ''),
+          "I can't reach my model right now: this NanoClaw install's model relay isn't running. The operator needs to check the host logs and restart NanoClaw.",
+        );
+      }
+      if (modelCredentialFromEnv(process.env).kind === 'none') {
+        throw userFacingError(
+          'OpenShell model relay has no credential (ANTHROPIC_API_KEY / CLAUDE_CODE_OAUTH_TOKEN missing from the service environment); refusing session',
+          "I can't reply yet: no Claude credential is configured for this NanoClaw install. The operator needs to run setup's sign-in step (`pnpm exec tsx setup/index.ts --step gateway-auth`) and restart NanoClaw.",
+        );
+      }
       return {
         contribution: {
           env: contributionEnv(cfg),
@@ -136,14 +199,23 @@ registerGatewayProvider({
     },
   },
   approvals: {
-    // Must stay pending until aborted: a subscription that ENDS means "bridge
-    // down" to core, which closes session admission. OpenShell allow/deny is
-    // enforced by the gateway itself, so nothing is forwarded for approval.
-    subscribe(_decide, signal) {
-      return new Promise<void>((resolve) => {
-        if (signal.aborted) resolve();
-        else signal.addEventListener('abort', () => resolve(), { once: true });
+    // Pending == relay listening. Ending/throwing tells core the gateway is
+    // unavailable: it closes session admission and retries with backoff.
+    // OpenShell allow/deny is enforced by the gateway itself, so nothing is
+    // forwarded for approval.
+    async subscribe(_decide, signal) {
+      if (signal.aborted) return;
+      const state = await startModelRelay(openShellGatewayConfig(settings()));
+      await new Promise<void>((resolve) => {
+        const onAbort = () => resolve();
+        signal.addEventListener('abort', onAbort, { once: true });
+        void state.closed.then(() => {
+          signal.removeEventListener('abort', onAbort);
+          resolve();
+        });
       });
+      if (signal.aborted) await stopModelRelay();
+      else throw new Error('OpenShell model relay stopped listening');
     },
   },
 });

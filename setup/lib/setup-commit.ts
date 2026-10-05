@@ -13,6 +13,8 @@ import { join } from 'node:path';
 
 import * as p from '@clack/prompts';
 
+import { isUpgradeCurrent, writeUpgradeState } from '../../src/upgrade-state.js';
+
 /** Dirty path → fingerprint of its working-tree entry (type, mode, content), or '-' when absent. */
 export type TreeSnapshot = Map<string, string>;
 
@@ -128,6 +130,42 @@ function reason(err: unknown): string {
   return stderr || (err instanceof Error ? err.message : String(err));
 }
 
+function upgradeCurrent(root: string): boolean {
+  try {
+    return isUpgradeCurrent(root);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Setup's own `setup: apply <skill>` commit moves HEAD, and the startup
+ * tripwire compares the upgrade marker against HEAD — so a channel skill
+ * applied after the service step (pairing, init-first-agent) made the very
+ * next restart refuse to boot. When the marker matched the checkout right
+ * before this commit, the commit is setup's own sanctioned work: re-stamp.
+ * A checkout that was NOT sanctioned before stays unsanctioned; no marker is
+ * created where none existed (the service step stamps the first one).
+ */
+export function restampAfterSetupCommit(
+  root: string,
+  sanctionedBefore: boolean,
+  label: string,
+  onError: (error: string) => void = () => {},
+): boolean {
+  if (!sanctionedBefore) return false;
+  try {
+    writeUpgradeState({ via: `setup: apply ${label}`, projectRoot: root });
+    return true;
+  } catch (err) {
+    onError(
+      `Committed ${label}, but couldn't update the upgrade marker (${reason(err)}); ` +
+        'the next restart will stop at the upgrade check. See docs/upgrade-recovery.md.',
+    );
+    return false;
+  }
+}
+
 /** Run one skill apply and commit its changes, even when the apply throws. */
 export async function withSetupCommit<T>(
   root: string,
@@ -144,11 +182,15 @@ export async function withSetupCommit<T>(
   } catch (err) {
     onError(`Couldn't check which files setup changes (${reason(err)}); commit them yourself before updating.`);
   }
+  // Was this checkout on the sanctioned path right before setup's own commit?
+  // Only then is it carried across that commit (see restampAfterSetupCommit).
+  const sanctionedBefore = upgradeCurrent(root);
   try {
     return await apply();
   } finally {
     const result = commitSetupChanges(root, before, `setup: apply ${label}`);
     if (result.error) onError(result.error);
+    if (result.committed.length > 0) restampAfterSetupCommit(root, sanctionedBefore, label, onError);
   }
 }
 

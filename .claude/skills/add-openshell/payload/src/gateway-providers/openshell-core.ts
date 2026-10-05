@@ -21,7 +21,12 @@
 export interface OpenShellGatewayConfig {
   /** Name agents use to reach host services through the OpenShell proxy. */
   hostAlias: string;
-  /** Loopback port the model relay listens on. Must be in the driver's NANOCLAW_OPENSHELL_GATEWAY_PORTS. */
+  /**
+   * Loopback port the model relay listens on. Chosen per install by setup and
+   * written together with the driver's NANOCLAW_OPENSHELL_GATEWAY_PORTS; there
+   * is deliberately no fixed default (a shared port lets one copy's sandboxes
+   * reach another copy's relay).
+   */
   relayPort: number;
   /** Upstream model API the relay forwards to. */
   modelUpstream: string;
@@ -36,12 +41,28 @@ export const OPENSHELL_GATEWAY_SETTING_KEYS = [
 
 export const DEFAULTS = {
   hostAlias: 'host.openshell.internal',
-  relayPort: 18790,
   modelUpstream: 'https://api.anthropic.com',
 } as const;
 
-function port(v: string | undefined, fallback: number, name: string): number {
-  if (v === undefined || v.trim() === '') return fallback;
+/**
+ * The relay answers GET on this path with `{"install": "<slug>"}` and never
+ * forwards it upstream, so setup can tell "port held by this install's relay"
+ * from "port held by something else". Same value as RELAY_IDENTITY_PATH in
+ * setup/lib/openshell-relay-port.ts (a test keeps them equal).
+ */
+export const RELAY_IDENTITY_PATH = '/.nanoclaw/relay-identity';
+
+/** An Error whose `userMessage` core shows in the chat that triggered the session. */
+export function userFacingError(message: string, userMessage: string): Error & { userMessage: string } {
+  return Object.assign(new Error(message), { userMessage });
+}
+
+function port(v: string | undefined, name: string): number {
+  if (v === undefined || v.trim() === '') {
+    throw new Error(
+      `${name} is not set; run \`pnpm exec tsx setup/index.ts --step openshell -- --enable\` to choose a port for this install`,
+    );
+  }
   const n = Number(v);
   if (!Number.isInteger(n) || n < 1 || n > 65535) throw new Error(`${name}='${v}' must be a TCP port`);
   return n;
@@ -60,7 +81,7 @@ export function openShellGatewayConfig(env: Record<string, string | undefined>):
   }
   return {
     hostAlias: env.NANOCLAW_OPENSHELL_HOST_ALIAS?.trim() || DEFAULTS.hostAlias,
-    relayPort: port(env.NANOCLAW_OPENSHELL_MODEL_RELAY_PORT, DEFAULTS.relayPort, 'NANOCLAW_OPENSHELL_MODEL_RELAY_PORT'),
+    relayPort: port(env.NANOCLAW_OPENSHELL_MODEL_RELAY_PORT, 'NANOCLAW_OPENSHELL_MODEL_RELAY_PORT'),
     modelUpstream: parsed.origin,
   };
 }

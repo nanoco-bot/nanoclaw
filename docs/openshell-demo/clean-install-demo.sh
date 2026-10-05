@@ -112,9 +112,9 @@ log "3b/9 — Derive an OpenShell-compatible image"
 # OpenShell refuses any bind mount covering the image's own WORKDIR; the stock
 # image sets WORKDIR /workspace/group, which collides with NanoClaw's session
 # mount at /workspace. Move WORKDIR outside any mount target.
+# Same builder setup's container step now runs on the openshell driver.
 OPENSHELL_IMAGE="nanoclaw-agent-v2-${SLUG}:openshell"
-printf 'FROM %s\nUSER root\nRUN mkdir -p /sandbox && chown node:node /sandbox\nUSER node\nWORKDIR /sandbox\n' "$BASE_IMAGE" \
-  | docker build -t "$OPENSHELL_IMAGE" -
+pnpm exec tsx setup/lib/openshell-image.ts
 ok "Derived image: $OPENSHELL_IMAGE"
 
 # ---------------------------------------------------------------------------
