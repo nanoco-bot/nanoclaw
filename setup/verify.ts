@@ -14,6 +14,7 @@ import { log } from '../src/log.js';
 import { getLaunchdLabel, getSystemdUnit } from '../src/install-slug.js';
 import { inspectCentralDb } from './central-db-inspection.js';
 import { inspectInstallCredential, type ServiceCredential } from './lib/openshell-credential.js';
+import { inspectOpenShellRuntime, SUPERVISOR_IMAGE_KEY, type RuntimeReport } from './lib/openshell-runtime.js';
 import { inspectAgentImage, readImageSource } from './lib/registry-state.js';
 import { getPlatform, getServiceManager, hasSystemd, isRoot } from './platform.js';
 import { emitStatus } from './status.js';
@@ -128,6 +129,10 @@ export async function run(_args: string[]): Promise<void> {
   // 3. Check credentials
   const { credentials, credentialSource } = checkCredentials(projectRoot);
 
+  // 3b. OpenShell copies only: its gateway answers and the supervisor image it
+  //     pins every sandbox to is still in Docker (null on every other copy).
+  const openshell = checkOpenShellRuntime(projectRoot);
+
   // 4. Check channel auth (detect configured channels by credentials)
   const envVars = readEnvFile([
     'TELEGRAM_BOT_TOKEN',
@@ -230,6 +235,7 @@ export async function run(_args: string[]): Promise<void> {
     wiringPending,
     slackInstall,
     configuredChannels,
+    openshell,
   });
 
   log.info('Verification complete', {
@@ -240,6 +246,7 @@ export async function run(_args: string[]): Promise<void> {
     imageSource,
     imageSourceActual: image.source,
     derivedGroups,
+    ...(openshell ? { openshell } : {}),
   });
 
   // The image fields are reporting only — they are not inputs to
@@ -263,6 +270,13 @@ export async function run(_args: string[]): Promise<void> {
     // versions.json. Empty for a locally built image — it has never had one.
     IMAGE_DIGEST: image.registryDigest ?? '',
     DERIVED_GROUPS: derivedGroups,
+    ...(openshell
+      ? {
+          OPENSHELL_GATEWAY: openshell.gateway,
+          OPENSHELL_SUPERVISOR_IMAGE: openshell.supervisorImage,
+          ...(openshell.supervisorImageRef ? { OPENSHELL_SUPERVISOR_IMAGE_REF: openshell.supervisorImageRef } : {}),
+        }
+      : {}),
     ...(slackInstall ? { SLACK_INSTALL: slackInstall } : {}),
     ...(slackWiringPending ? { WIRING: 'pending_slack_install' } : wiringPending ? { WIRING: 'pending_first_dm' } : {}),
     STATUS: status,
@@ -312,6 +326,37 @@ export function checkCredentials(
 }
 
 /**
+ * The OpenShell runtime, on a copy whose driver is `openshell`; null on every
+ * other copy, which this never touches. Read-only (inspectOpenShellRuntime):
+ * whether the gateway answers, and whether the supervisor image it runs every
+ * sandbox's supervisor from is still in Docker. That image goes missing after
+ * an `image prune -a`, and from then on every sandbox create fails until it is
+ * pulled again — the gateway resolves it only when it starts.
+ */
+export function checkOpenShellRuntime(
+  projectRoot: string,
+  inspect: typeof inspectOpenShellRuntime = inspectOpenShellRuntime,
+): RuntimeReport | null {
+  const keys = [
+    'NANOCLAW_RUNTIME_DRIVER',
+    'OPENSHELL_BIN',
+    'OPENSHELL_GATEWAY',
+    'OPENSHELL_GATEWAY_ENDPOINT',
+    SUPERVISOR_IMAGE_KEY,
+  ];
+  const fromFile = readEnvFile(keys, projectRoot);
+  const get = (key: string) => process.env[key]?.trim() || fromFile[key]?.trim() || '';
+  if (get('NANOCLAW_RUNTIME_DRIVER').toLowerCase() !== 'openshell') return null;
+  const env: NodeJS.ProcessEnv = {};
+  for (const key of ['OPENSHELL_GATEWAY', 'OPENSHELL_GATEWAY_ENDPOINT']) if (get(key)) env[key] = get(key);
+  return inspect({
+    bin: get('OPENSHELL_BIN') || 'openshell',
+    env,
+    supervisorOverride: get(SUPERVISOR_IMAGE_KEY) || undefined,
+  });
+}
+
+/**
  * Channels whose wiring only completes after the first inbound message —
  * the platform id doesn't exist until the bot is DM'd, so setup ends with
  * the channel configured but no group wired. Kept in lockstep with the
@@ -335,9 +380,12 @@ export function determineVerifyStatus(input: {
   wiringPending?: boolean;
   slackInstall?: SlackJob['status'];
   configuredChannels?: string[];
+  /** OpenShell copies only: no sandbox starts without the gateway and its supervisor image. */
+  openshell?: Pick<RuntimeReport, 'gateway' | 'supervisorImage'> | null;
 }): 'success' | 'failed' {
   return input.service === 'running' &&
     input.credentials !== 'missing' &&
+    (!input.openshell || (input.openshell.gateway === 'connected' && input.openshell.supervisorImage !== 'missing')) &&
     input.slackInstall !== 'failed' &&
     input.slackInstall !== 'expired' &&
     (input.registeredGroups > 0 ||

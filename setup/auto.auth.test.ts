@@ -69,7 +69,12 @@ vi.mock('./environment.js', () => ({
 }));
 vi.mock('./platform.js', async (original) => {
   const real = await original<typeof import('./platform.js')>();
-  return { ...real, getPlatform: () => fixture.platform ?? real.getPlatform() };
+  return {
+    ...real,
+    getPlatform: () => fixture.platform ?? real.getPlatform(),
+    // A mocked Mac is an Apple silicon one: OpenShell refuses Intel Macs.
+    getArch: () => (fixture.platform === 'macos' ? 'arm64' : real.getArch()),
+  };
 });
 vi.mock('./logs.js', () => ({ userInput: vi.fn() }));
 vi.mock('./lib/diagnostics.js', () => ({ emit: vi.fn() }));
@@ -78,6 +83,25 @@ vi.mock('./lib/runner.js', async (original) => ({
   fail: fixture.fail,
   // Only the OpenShell tests below reach a quiet step; everything else here skips them.
   runQuietStep: async (step: string) => {
+    fixture.quietSteps.push(step);
+    fixture.sequence.push(`step:${step}`);
+    return {
+      ok: true,
+      exitCode: 0,
+      blocks: [],
+      transcript: '',
+      terminal: { type: 'X', fields: { STATUS: 'success' } },
+    };
+  },
+}));
+// Hermetic: never this checkout's own .env (NANOCLAW_SKIP=openshell reads it).
+vi.mock('./openshell.js', async (original) => ({
+  ...(await original<typeof import('./openshell.js')>()),
+  readOpenShellEnv: () => ({}),
+}));
+// The OpenShell install step (windowed: it downloads); recorded like the quiet steps.
+vi.mock('./lib/windowed-runner.js', () => ({
+  runWindowedStep: async (step: string) => {
     fixture.quietSteps.push(step);
     fixture.sequence.push(`step:${step}`);
     return {
@@ -262,7 +286,6 @@ describe('setup wizard provider choice with OpenShell sandboxing', () => {
   // the gateway step skipped (gatewayKind is still forced to openshell).
   function enableOpenShell(): void {
     vi.stubEnv('NANOCLAW_OPENSHELL', 'true');
-    vi.stubEnv('NANOCLAW_OPENSHELL_UI', '');
     vi.stubEnv('NANOCLAW_GATEWAY_PROVIDER', '');
     vi.stubEnv(
       'NANOCLAW_SKIP',
@@ -277,7 +300,7 @@ describe('setup wizard provider choice with OpenShell sandboxing', () => {
 
     await runWizardUntilExit();
 
-    expect(fixture.quietSteps).toEqual(['openshell']);
+    expect(fixture.quietSteps).toEqual(['openshell', 'openshell-install']);
     expect(fixture.brightSelect).not.toHaveBeenCalled();
     expect(fixture.runGatewayAuth).toHaveBeenCalledWith('openshell', 'claude');
     expect(fixture.runAuth).not.toHaveBeenCalled();
@@ -348,7 +371,6 @@ describe('setup wizard step order: agent auth vs the service step', () => {
     fixture.platform = platform;
     fixture.claudeHasRunAuth = false; // as setup/providers/claude.ts registers it
     vi.stubEnv('NANOCLAW_OPENSHELL', 'true');
-    vi.stubEnv('NANOCLAW_OPENSHELL_UI', '');
     vi.stubEnv('NANOCLAW_GATEWAY_PROVIDER', '');
     vi.stubEnv('NANOCLAW_AGENT_PROVIDER', '');
     vi.stubEnv('NANOCLAW_SKIP', SKIP_BASE);
@@ -370,6 +392,7 @@ describe('setup wizard step order: agent auth vs the service step', () => {
     await runWizardUntilExit();
     expect(fixture.sequence).toEqual([
       'step:openshell',
+      'step:openshell-install',
       'step:mounts',
       'step:service',
       'gateway-auth:openshell:claude',
@@ -383,6 +406,7 @@ describe('setup wizard step order: agent auth vs the service step', () => {
     await runWizardUntilExit();
     expect(fixture.sequence).toEqual([
       'step:openshell',
+      'step:openshell-install',
       'gateway-auth:openshell:claude',
       'step:mounts',
       'step:service',

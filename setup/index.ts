@@ -12,6 +12,7 @@ const STEPS: Record<string, () => Promise<{ run: (args: string[]) => Promise<voi
   environment: () => import('./environment.js'),
   container: () => import('./container.js'),
   openshell: () => import('./openshell.js'),
+  'openshell-install': () => import('./openshell-install.js'),
   'openshell-ui': () => import('./openshell-ui.js'),
   register: () => import('./register.js'),
   'pair-telegram': () => import('./pair-telegram.js'),

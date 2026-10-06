@@ -17,14 +17,19 @@
  *   NANOCLAW_OPENSHELL     true/false: answer "Enable OpenShell sandboxing?"
  *                          without asking (with OPENSHELL_BIN / OPENSHELL_GATEWAY).
  *                          Unset and no TTY means no — Docker, nothing written.
- *   NANOCLAW_OPENSHELL_UI  true/false: when OpenShell got enabled, answer "Also
- *                          start the OpenShell setup web UI?" without asking
- *                          (NANOCLAW_OPENSHELL_UI_PORT picks the port). Unset and
- *                          no TTY means no.
+ *                          Once enabled, setup installs OpenShell itself
+ *                          (openshell-install, after the container step) and
+ *                          starts the OpenShell setup web UI at the end, without
+ *                          asking (NANOCLAW_OPENSHELL_UI_PORT picks its port).
+ *                          false on an OpenShell copy switches it back to Docker.
  *   NANOCLAW_SKIP          comma-separated step names to skip
- *                          (environment|openshell|openshell-ui|container|gateway|auth|mounts|
- *                           service|cli-agent|timezone|channel|
- *                           verify|first-chat)
+ *                          (environment|openshell|openshell-install|openshell-ui|
+ *                           container|gateway|auth|mounts|service|cli-agent|
+ *                           timezone|channel|verify|first-chat).
+ *                          `openshell` skips the question and keeps whatever
+ *                          `.env` already says — a copy without OpenShell runs
+ *                          none of its steps; `fail()`'s retry skips it this way
+ *                          once it has completed.
  *
  * Timezone is auto-detected after the CLI agent step. UTC resolves are
  * confirmed with the user, and free-text replies fall through to a
@@ -89,7 +94,8 @@ import { detectExistingInstall } from './uninstall/scan.js';
 import { detectRegisteredGroups, detectExistingDisplayName, readEnvKey } from './environment.js';
 import { installGateway, runGatewayAuth } from './gateways/install.js';
 import { OPENSHELL_DRIVER, OPENSHELL_GATEWAY_KIND, askOpenShell, readOpenShellEnv } from './openshell.js';
-import { askOpenShellUi } from './openshell-ui.js';
+import { hostSupport, unsupportedHostHint } from './openshell-install.js';
+import { gatewayConfigRemedy } from './lib/openshell-runtime.js';
 import { loadGatewayCatalog } from './gateways/catalog.js';
 import { configuredGatewayKind, detectInstalledGateway } from './gateways/selection.js';
 import { getLaunchdLabel, getSystemdUnit } from '../src/install-slug.js';
@@ -274,9 +280,10 @@ async function main(): Promise<void> {
 
   // OpenShell sandboxing is opt-in. Asked before the image step because it
   // decides the runtime driver and, with it, the gateway installed below.
-  const openshellEnabled = skip.has('openshell') ? false : await runOpenShellChoice();
-  // Only once OpenShell is on, and still its own yes/no: the operator UI is optional.
-  if (openshellEnabled && !skip.has('openshell-ui')) await runOpenShellUiChoice();
+  // Skipped (incl. fail()'s retry after it completed): whatever .env says.
+  const openshellEnabled = skip.has('openshell')
+    ? openShellConfigured()
+    : await runOpenShellChoice({ installSkipped: skip.has('openshell-install') });
 
   if (!skip.has('container')) {
     p.log.message(
@@ -348,6 +355,12 @@ async function main(): Promise<void> {
     }
     maybeReexecUnderSg();
   }
+
+  // OpenShell itself: CLI, its local gateway, its supervisor image. After the
+  // container step because OpenShell's gateway runs sandboxes on Docker, which
+  // that step installs; before the gateway step, whose OpenShell skill wants
+  // the CLI in place.
+  if (openshellEnabled && !skip.has('openshell-install')) await runOpenShellInstall();
 
   // OpenShell copies run the OpenShell gateway: its relay is the only model
   // route a sandbox's policy allows (runOpenShellChoice refused a conflict).
@@ -771,12 +784,19 @@ async function main(): Promise<void> {
   // Keep the chosen agent through the later Slack offer as well. A later run
   // derives connect choices from current wirings instead of inheriting this id.
   delete process.env.NANOCLAW_TEMPLATE_AGENT_ID;
-  if (!skip.has('verify')) {
-    const res = await runQuietStep('verify', {
-      running: 'Making sure everything works together…',
-      done: 'NanoClaw is running.',
-      failed: 'A few things still need your attention.',
-    });
+  const verifyRes = skip.has('verify')
+    ? null
+    : await runQuietStep('verify', {
+        running: 'Making sure everything works together…',
+        done: 'NanoClaw is running.',
+        failed: 'A few things still need your attention.',
+      });
+  // The OpenShell setup UI starts last, so its URL is among the final lines,
+  // and whether or not verify passed: replacing the Claude credential is one
+  // of the things it is for.
+  if (openshellEnabled && !skip.has('openshell-ui')) await startOpenShellUi();
+  if (verifyRes) {
+    const res = verifyRes;
     if (!res.ok) {
       const notes: string[] = [];
       if (res.terminal?.fields.CREDENTIALS !== 'configured') {
@@ -784,6 +804,16 @@ async function main(): Promise<void> {
           res.terminal?.fields.CREDENTIAL_SOURCE
             ? "• The OpenShell model relay has no Claude credential, so agents can't reply. Run `pnpm exec tsx setup/index.ts --step gateway-auth`."
             : "• Your Claude account isn't connected. Re-run setup and try again.",
+        );
+      }
+      const openshellGateway = res.terminal?.fields.OPENSHELL_GATEWAY;
+      if (openshellGateway && openshellGateway !== 'connected') {
+        notes.push(
+          "• OpenShell's gateway isn't answering, so no sandbox can start. Run `pnpm exec tsx setup/index.ts --step openshell-install` to see why.",
+        );
+      } else if (res.terminal?.fields.OPENSHELL_SUPERVISOR_IMAGE === 'missing') {
+        notes.push(
+          `• OpenShell's supervisor image is missing, so no sandbox can start. Run \`docker pull ${res.terminal.fields.OPENSHELL_SUPERVISOR_IMAGE_REF}\`.`,
         );
       }
       const service = res.terminal?.fields.SERVICE;
@@ -905,16 +935,24 @@ async function main(): Promise<void> {
 
 // ─── openshell step ─────────────────────────────────────────────────────
 
+/** NANOCLAW_SKIP=openshell: no question, the copy stays as `.env` has it. */
+function openShellConfigured(): boolean {
+  return readOpenShellEnv().NANOCLAW_RUNTIME_DRIVER?.trim().toLowerCase() === OPENSHELL_DRIVER;
+}
+
 /**
  * "Enable OpenShell sandboxing?" — answered by, in order: NANOCLAW_OPENSHELL
  * (flag/env), an earlier answer already in `.env`, the operator (TTY only).
  * No answer means no, and no means nothing is written: Docker stays the
- * runtime exactly as before this step existed.
+ * runtime exactly as before this step existed. A machine OpenShell is not
+ * published for (an Intel Mac) is never asked; choosing OpenShell there
+ * anyway (flag or `.env`) stops setup with the reason.
  */
-async function runOpenShellChoice(): Promise<boolean> {
+async function runOpenShellChoice(opts: { installSkipped: boolean }): Promise<boolean> {
   const existing = readOpenShellEnv();
   const alreadyEnabled = existing.NANOCLAW_RUNTIME_DRIVER?.trim().toLowerCase() === OPENSHELL_DRIVER;
   const flag = process.env.NANOCLAW_OPENSHELL?.trim().toLowerCase();
+  const support = hostSupport();
   let enable: boolean;
   let bin = process.env.OPENSHELL_BIN?.trim() || existing.OPENSHELL_BIN;
   let gateway = process.env.OPENSHELL_GATEWAY?.trim() || existing.OPENSHELL_GATEWAY;
@@ -922,12 +960,16 @@ async function runOpenShellChoice(): Promise<boolean> {
     enable = flag === 'true';
   } else if (alreadyEnabled) {
     enable = true;
-  } else if (process.stdin.isTTY) {
+  } else if (process.stdin.isTTY && support.ok) {
     const answers = await askOpenShell(existing);
     enable = answers.enable;
     bin = answers.bin ?? bin;
     gateway = answers.gateway ?? gateway;
   } else {
+    // In place of a question whose only working answer is no.
+    if (process.stdin.isTTY && !support.ok) {
+      p.log.info(brandBody(`${support.reason} This install uses Docker sandboxing.`));
+    }
     enable = false;
   }
   setupLog.userInput('openshell', String(enable));
@@ -944,6 +986,13 @@ async function runOpenShellChoice(): Promise<boolean> {
     return false;
   }
 
+  if (!support.ok) {
+    await fail(
+      'openshell',
+      "OpenShell sandboxing isn't available on this machine.",
+      unsupportedHostHint(support.reason),
+    );
+  }
   const chosenGateway = process.env.NANOCLAW_GATEWAY_PROVIDER?.trim().toLowerCase();
   if (chosenGateway && chosenGateway !== OPENSHELL_GATEWAY_KIND) {
     await fail(
@@ -952,7 +1001,8 @@ async function runOpenShellChoice(): Promise<boolean> {
       'Re-run setup without a gateway selection, or without --openshell.',
     );
   }
-  const args = ['--enable', '--no-gateway'];
+  // OpenShell itself is installed by the openshell-install step, after Docker.
+  const args = ['--enable', '--no-gateway', '--no-install'];
   if (bin) args.push('--bin', bin);
   if (gateway) args.push('--gateway', gateway);
   const res = await runQuietStep(
@@ -963,7 +1013,8 @@ async function runOpenShellChoice(): Promise<boolean> {
   if (!res.ok) {
     await fail('openshell', "Couldn't enable OpenShell sandboxing.", 'See logs/setup-steps/ for details, then retry.');
   }
-  if (res.terminal?.fields.CLI_FOUND === 'false') {
+  // Not yet installed is expected here; only a skipped install leaves it missing.
+  if (res.terminal?.fields.CLI_FOUND === 'false' && opts.installSkipped) {
     p.log.warn(
       brandBody(
         `The openshell CLI was not found at ${res.terminal?.fields.OPENSHELL_BIN}. Install it before starting NanoClaw.`,
@@ -974,20 +1025,40 @@ async function runOpenShellChoice(): Promise<boolean> {
 }
 
 /**
- * "Also start the OpenShell setup web UI?" — answered by NANOCLAW_OPENSHELL_UI
- * (flag/env), else the operator (TTY only, default no); unanswered without a
- * TTY means no. Yes runs `setup --step openshell-ui -- --enable` (its run(), as
- * a quiet step like every other step here, so its output lands in
- * logs/setup-steps/). A failure is a warning, never fatal: OpenShell itself is
- * already configured and the UI can be started later. "No" never removes a
- * UI an earlier run installed.
+ * Install OpenShell (`setup --step openshell-install`): its CLI and local
+ * gateway through NVIDIA's installer at the versions.json pin (nothing when
+ * already installed), then the gateway answers, its supervisor image is
+ * pulled, and it accepts NanoClaw's mounts. Windowed: a first install
+ * downloads the package and the gateway's images.
  */
-async function runOpenShellUiChoice(): Promise<void> {
-  const flag = process.env.NANOCLAW_OPENSHELL_UI?.trim().toLowerCase();
-  const enable = flag === 'true' ? true : flag === 'false' ? false : process.stdin.isTTY ? await askOpenShellUi() : false;
-  setupLog.userInput('openshell_ui', String(enable));
-  if (!enable) return;
+async function runOpenShellInstall(): Promise<void> {
+  const res = await runWindowedStep('openshell-install', {
+    running: 'Installing OpenShell…',
+    done: 'OpenShell is installed and its gateway is running.',
+    failed: "Couldn't finish installing OpenShell.",
+  });
+  if (res.ok) {
+    if (Number(res.terminal?.fields.WARNINGS ?? 0) > 0) {
+      p.log.warn(brandBody('OpenShell installed with a warning; see logs/setup-steps/openshell-install.log.'));
+    }
+    return;
+  }
+  const fields = res.terminal?.fields ?? {};
+  // The gateway-settings hint is multi-line (TOML); the status block holds one line.
+  const hint =
+    fields.ERROR === 'gateway_config'
+      ? gatewayConfigRemedy(getPlatform())
+      : fields.HINT || 'See logs/setup-steps/ for the installer output, then retry.';
+  await fail('openshell-install', fields.MESSAGE || "Couldn't install OpenShell.", hint, res.rawLog);
+}
 
+/**
+ * The OpenShell setup web UI (`setup --step openshell-ui -- --enable`),
+ * started without asking whenever OpenShell is enabled; NANOCLAW_SKIP=openshell-ui
+ * leaves it out. Success prints only its URL. A failure is a warning, never
+ * fatal: the UI is a convenience and can be started later.
+ */
+async function startOpenShellUi(): Promise<void> {
   const args = ['--enable'];
   const port = process.env.NANOCLAW_OPENSHELL_UI_PORT?.trim();
   if (port) args.push('--port', port);
@@ -998,19 +1069,11 @@ async function runOpenShellUiChoice(): Promise<void> {
   );
   const url = res.terminal?.fields.URL;
   if (res.ok && url) {
-    // Not where the initial credential goes: that is the Claude sign-in step
-    // later in this same run. The UI is for afterwards.
-    p.log.info(
-      brandBody(
-        `OpenShell setup UI is running at ${url} (no login of its own — expose it only through your reverse proxy). ` +
-          'Use it any time to manage providers, review and approve egress-policy proposals, or replace the Claude credential. ' +
-          'Setup continues here; you will connect Claude in a later step.',
-      ),
-    );
+    p.log.info(brandBody(`OpenShell setup UI: ${url}`));
   } else {
     p.log.warn(
       brandBody(
-        "The OpenShell setup UI didn't start (see logs/setup-steps/). Setup continues; start it later with " +
+        "The OpenShell setup UI didn't start (see logs/setup-steps/). Start it later with " +
           '`pnpm exec tsx setup/index.ts --step openshell-ui -- --enable`.',
       ),
     );

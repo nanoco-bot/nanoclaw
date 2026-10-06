@@ -1,5 +1,7 @@
 /**
- * Step: openshell-ui — opt-in operator web UI for an OpenShell-backed install.
+ * Step: openshell-ui — the operator web UI for an OpenShell-backed install.
+ * The setup wizard runs `--enable` at the very end whenever OpenShell is
+ * enabled, without asking (NANOCLAW_SKIP=openshell-ui leaves it out).
  *
  *   pnpm exec tsx setup/index.ts --step openshell-ui                    # asks (TTY), default: no
  *   pnpm exec tsx setup/index.ts --step openshell-ui -- --enable [--port 8790]
@@ -431,11 +433,14 @@ export function serviceStatusFields(loc: UiServiceLocation): Record<string, stri
     : { SERVICE_TYPE: loc.root ? 'systemd-system' : 'systemd-user', UNIT: loc.unit, UNIT_PATH: loc.unitPath };
 }
 
-/** The interactive question, shared by `--step openshell-ui` and the setup wizard. Default: no. */
+/**
+ * The interactive question for a bare `--step openshell-ui` (default: no). The
+ * setup wizard does not ask: it starts the UI whenever OpenShell is enabled.
+ */
 export async function askOpenShellUi(): Promise<boolean> {
   const answer = await p.confirm({
     message:
-      'Also start the OpenShell setup web UI? (manage providers, approve egress-policy proposals, replace the Claude ' +
+      'Start the OpenShell setup web UI? (manage providers, approve egress-policy proposals, replace the Claude ' +
       `credential later; runs in the background on port ${DEFAULT_UI_PORT} by default, with no login of its own)`,
     initialValue: false,
   });

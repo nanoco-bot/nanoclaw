@@ -22,8 +22,13 @@ a tool call reaches a third-party API.
 
 ## Prerequisites
 
-- Docker (no sudo), the `openshell` CLI on PATH with its gateway already running, Node ≥22,
-  pnpm (corepack will activate the repo's pinned version automatically).
+- Docker (no sudo), Node ≥22, pnpm (corepack will activate the repo's pinned version
+  automatically).
+- An OpenShell gateway configured for NanoClaw's bind mounts (see "OpenShell itself" in
+  `.claude/skills/add-openshell/SKILL.md`). Step 4 now installs OpenShell when it is missing
+  (`setup --step openshell -- --enable` runs `setup/install-openshell.sh` at the `versions.json`
+  pin) and stops with the exact `gateway.toml` lines when the gateway refuses the mounts. On a
+  box like the lab VM, where OpenShell already runs, it only checks.
 - A read-only deploy key for `nanoco-bot/nanoclaw` on the machine (see `memory/lab-vm.md`
   conventions) — the script clones over SSH.
 - ~3 GB free disk for the image builds; more headroom if other images/containers already sit on

@@ -79,7 +79,7 @@ export function preflight(
   const bin = env.OPENSHELL_BIN?.trim() || 'openshell';
   if (!which(bin)) {
     warnings.push(
-      `The openshell CLI was not found at '${bin}'. Install it (https://github.com/NVIDIA/OpenShell) ` +
+      `The openshell CLI was not found at '${bin}'. Install it with \`pnpm exec tsx setup/index.ts --step openshell-install\` ` +
         'or set OPENSHELL_BIN to its absolute path before starting NanoClaw.',
     );
   } else if (!bin.includes('/')) {

@@ -2,20 +2,26 @@
  * Step: openshell — opt this copy into NVIDIA OpenShell sandboxing.
  *
  *   pnpm exec tsx setup/index.ts --step openshell                 # asks (TTY), default: no
- *   pnpm exec tsx setup/index.ts --step openshell -- --enable --bin /usr/local/bin/openshell [--gateway <name>]
+ *   pnpm exec tsx setup/index.ts --step openshell -- --enable [--bin /usr/bin/openshell] [--gateway <name>] [--no-install]
  *   pnpm exec tsx setup/index.ts --step openshell -- --disable    # back to Docker
  *
  * Declining changes nothing: no `.env` write, Docker stays the runtime (its
- * default when NANOCLAW_RUNTIME_DRIVER is unset). Enabling writes, in one
- * atomic `.env` update:
+ * default when NANOCLAW_RUNTIME_DRIVER is unset). Enabling first refuses a
+ * machine OpenShell is not published for (an Intel Mac), then installs
+ * OpenShell itself — CLI, its local gateway, its supervisor image — through
+ * setup/openshell-install.ts, unless `--no-install` (the setup wizard runs that
+ * step on its own, after Docker is in place). A failed install writes nothing.
+ * Then it writes, in one atomic `.env` update:
  *   - NANOCLAW_RUNTIME_DRIVER=openshell          (read by src/drivers/index.ts)
  *   - OPENSHELL_BIN (absolute when resolvable), optional OPENSHELL_GATEWAY
  *   - the sandbox policy defaults the NanoClaw agent image needs, ONLY where
  *     the operator has not set them already;
- * then installs the `openshell` gateway through the same skill-driven path as
- * every other gateway (`installGateway`, which stamps NANOCLAW_GATEWAY_PROVIDER
- * only after the skill fully applies). `--no-gateway` leaves that to the
- * caller — the setup wizard's own gateway step does it.
+ * then installs NanoClaw's `openshell` gateway (the add-openshell skill's
+ * model relay — not OpenShell's own gateway, which the install above set up)
+ * through the same skill-driven path as every other gateway (`installGateway`,
+ * which stamps NANOCLAW_GATEWAY_PROVIDER only after the skill fully applies).
+ * `--no-gateway` leaves that to the caller — the setup wizard's own gateway
+ * step does it.
  *
  * Settings are `.env` keys because that is where the host reads every other
  * runtime setting from (`readSetting` in src/drivers/index.ts); this step
@@ -27,6 +33,13 @@ import { readEnvFile } from '../src/env.js';
 import { log } from '../src/log.js';
 import { getInstallSlug } from '../src/install-slug.js';
 import { installGateway } from './gateways/install.js';
+import {
+  hostSupport,
+  installOpenShell,
+  installStatusFields,
+  oneLine,
+  unsupportedHostHint,
+} from './openshell-install.js';
 import { buildOpenShellImage, type DockerRunner, realDocker } from './lib/openshell-image.js';
 import { RELAY_PORT_KEY, relayPortEnv, selectRelayPort, type RelayPortChoice } from './lib/openshell-relay-port.js';
 import { resolveBinary } from './lib/resolve-binary.js';
@@ -104,13 +117,19 @@ export function planOpenShellEnv(
   return { writes, warnings };
 }
 
-export function parseOpenShellArgs(args: string[]): Partial<OpenShellAnswers> & { installGateway: boolean } {
-  const out: Partial<OpenShellAnswers> & { installGateway: boolean } = { installGateway: true };
+export function parseOpenShellArgs(
+  args: string[],
+): Partial<OpenShellAnswers> & { installGateway: boolean; installOpenShell: boolean } {
+  const out: Partial<OpenShellAnswers> & { installGateway: boolean; installOpenShell: boolean } = {
+    installGateway: true,
+    installOpenShell: true,
+  };
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     if (arg === '--enable') out.enable = true;
     else if (arg === '--disable') out.enable = false;
     else if (arg === '--no-gateway') out.installGateway = false;
+    else if (arg === '--no-install') out.installOpenShell = false;
     else if (arg === '--bin' && args[i + 1] !== undefined) out.bin = args[++i];
     else if (arg === '--gateway' && args[i + 1] !== undefined) out.gateway = args[++i];
     else throw new Error(`Unknown or incomplete argument: ${arg}`);
@@ -126,10 +145,14 @@ export async function askOpenShell(existing: Record<string, string | undefined>)
     initialValue: enabled,
   });
   if (p.isCancel(enable) || !enable) return { enable: false };
+  // Nothing installed yet: setup installs OpenShell and registers its gateway
+  // as the CLI's default, so there is no path or gateway name to ask about.
+  const installed = (existing.OPENSHELL_BIN && resolveBinary(existing.OPENSHELL_BIN)) || resolveBinary('openshell');
+  if (!installed) return { enable: true };
   const bin = await p.text({
     message: 'Path to the openshell CLI',
     placeholder: 'openshell',
-    initialValue: existing.OPENSHELL_BIN || resolveBinary('openshell') || '',
+    initialValue: installed,
   });
   if (p.isCancel(bin)) return { enable: false };
   const gateway = await p.text({
@@ -225,6 +248,38 @@ export async function run(args: string[]): Promise<void> {
     return;
   }
 
+  // An Intel Mac cannot run OpenShell at all: refuse before writing anything.
+  const support = hostSupport();
+  if (!support.ok) {
+    console.error(`\n${unsupportedHostHint(support.reason)}\n`);
+    emitStatus('OPENSHELL', {
+      STATUS: 'failed',
+      ENABLED: false,
+      ERROR: 'unsupported_platform',
+      HINT: unsupportedHostHint(support.reason),
+    });
+    process.exit(1);
+  }
+
+  let installFields: Record<string, string | number> = {};
+  if (parsed.installOpenShell) {
+    const installed = await installOpenShell();
+    if (!installed.ok) {
+      console.error(`\n${installed.message}\n${installed.hint}\n`);
+      emitStatus('OPENSHELL', {
+        STATUS: 'failed',
+        ENABLED: false,
+        ERROR: installed.error,
+        MESSAGE: installed.message,
+        HINT: oneLine(installed.hint),
+      });
+      process.exit(1);
+    }
+    installFields = installStatusFields(installed);
+    // The CLI that was just installed or found, unless the operator named one.
+    if (!answers.bin?.trim()) answers = { ...answers, bin: installed.bin };
+  }
+
   const plan = await enableOpenShell(answers);
   for (const warning of plan.warnings) log.warn(warning);
   if (plan.image.status === 'failed') {
@@ -252,5 +307,8 @@ export async function run(args: string[]): Promise<void> {
     GATEWAY: gateway,
     CLI_FOUND: !plan.warnings.some((w) => w.startsWith('openshell CLI not found')),
     WARNINGS: plan.warnings.length,
+    // OpenShell itself: installed/checked here, or left to `--step openshell-install`.
+    INSTALL: parsed.installOpenShell ? 'done' : 'skipped',
+    ...Object.fromEntries(Object.entries(installFields).map(([k, v]) => [`INSTALL_${k}`, v])),
   });
 }

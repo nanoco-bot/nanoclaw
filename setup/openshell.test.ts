@@ -22,6 +22,40 @@ vi.mock('./lib/openshell-image.js', async (original) => {
   };
   return { ...real, realDocker: fake };
 });
+// OpenShell itself (install + runtime checks) is setup/openshell-install.ts's, tested there.
+const install = vi.hoisted(() => ({
+  support: { ok: true } as { ok: true } | { ok: false; reason: string },
+  outcome: undefined as unknown,
+  calls: 0,
+}));
+vi.mock('./openshell-install.js', async (original) => {
+  const real = await original<typeof import('./openshell-install.js')>();
+  return {
+    ...real,
+    hostSupport: () => install.support,
+    installOpenShell: async () => {
+      install.calls++;
+      return (
+        install.outcome ?? {
+          ok: true,
+          cli: 'installed',
+          version: 'openshell 0.1.2',
+          bin: '/usr/bin/openshell',
+          binWritten: true,
+          runtime: {
+            ok: true,
+            gatewayVersion: '0.1.2',
+            server: 'https://127.0.0.1:17670',
+            supervisorImageRef: 'ghcr.io/nvidia/openshell/supervisor:0.1.2',
+            supervisorImage: 'pulled',
+            mounts: 'ok',
+            warnings: [],
+          },
+        }
+      );
+    },
+  };
+});
 // Deterministic ports: everything is free.
 vi.mock('./lib/openshell-relay-port.js', async (original) => {
   const real = await original<typeof import('./lib/openshell-relay-port.js')>();
@@ -49,7 +83,11 @@ beforeEach(() => {
   installGateway.mockClear();
   docker.hasBase = false;
   docker.builds = [];
+  install.support = { ok: true };
+  install.outcome = undefined;
+  install.calls = 0;
   vi.spyOn(console, 'log').mockImplementation(() => {});
+  vi.spyOn(console, 'error').mockImplementation(() => {});
 });
 afterEach(() => {
   process.chdir(previous);
@@ -108,14 +146,15 @@ describe('planOpenShellEnv', () => {
 });
 
 describe('parseOpenShellArgs', () => {
-  it('parses enable/disable, bin, gateway and --no-gateway', () => {
-    expect(parseOpenShellArgs(['--enable', '--bin', '/b', '--gateway', 'g', '--no-gateway'])).toEqual({
+  it('parses enable/disable, bin, gateway, --no-gateway and --no-install', () => {
+    expect(parseOpenShellArgs(['--enable', '--bin', '/b', '--gateway', 'g', '--no-gateway', '--no-install'])).toEqual({
       enable: true,
       bin: '/b',
       gateway: 'g',
       installGateway: false,
+      installOpenShell: false,
     });
-    expect(parseOpenShellArgs([])).toEqual({ installGateway: true });
+    expect(parseOpenShellArgs([])).toEqual({ installGateway: true, installOpenShell: true });
     expect(() => parseOpenShellArgs(['--bin'])).toThrow(/incomplete/);
   });
 });
@@ -163,6 +202,61 @@ describe('setup --step openshell', () => {
   it('--no-gateway leaves the gateway to the caller', async () => {
     await run(['--enable', '--no-gateway']);
     expect(installGateway).not.toHaveBeenCalled();
+  });
+
+  it('--enable installs OpenShell first and records the CLI it installed', async () => {
+    const out: string[] = [];
+    vi.mocked(console.log).mockImplementation((line: string) => void out.push(line));
+    await run(['--enable', '--no-gateway']);
+    expect(install.calls).toBe(1);
+    expect(envValue('OPENSHELL_BIN')).toBe('/usr/bin/openshell');
+    const block = out.find((l) => l.startsWith('=== NANOCLAW SETUP: OPENSHELL ===')) ?? '';
+    expect(block).toMatch(/^INSTALL: done$/m);
+    expect(block).toMatch(/^INSTALL_SUPERVISOR_IMAGE_STATUS: pulled$/m);
+  });
+
+  it('--no-install (the wizard: it installs after the container step) skips the install', async () => {
+    const out: string[] = [];
+    vi.mocked(console.log).mockImplementation((line: string) => void out.push(line));
+    await run(['--enable', '--no-gateway', '--no-install']);
+    expect(install.calls).toBe(0);
+    expect(envValue('NANOCLAW_RUNTIME_DRIVER')).toBe('openshell');
+    expect(out.join('\n')).toMatch(/^INSTALL: skipped$/m);
+  });
+
+  it('a failed install writes nothing and installs no gateway', async () => {
+    install.outcome = { ok: false, error: 'gateway_config', message: 'refuses mounts', hint: 'add\nthese' };
+    vi.spyOn(process, 'exit').mockImplementation(((code: number) => {
+      throw new Error(`exit:${code}`);
+    }) as typeof process.exit);
+    const out: string[] = [];
+    vi.mocked(console.log).mockImplementation((line: string) => void out.push(line));
+    await expect(run(['--enable'])).rejects.toThrow('exit:1');
+    expect(readEnv()).toBe('');
+    expect(installGateway).not.toHaveBeenCalled();
+    expect(out.join('\n')).toMatch(/^ERROR: gateway_config$/m);
+    expect(out.join('\n')).toMatch(/^HINT: add these$/m);
+  });
+
+  it('an unsupported machine (Intel Mac) is refused before anything is installed or written', async () => {
+    install.support = { ok: false, reason: "OpenShell doesn't support Intel Macs." };
+    vi.spyOn(process, 'exit').mockImplementation(((code: number) => {
+      throw new Error(`exit:${code}`);
+    }) as typeof process.exit);
+    const out: string[] = [];
+    vi.mocked(console.log).mockImplementation((line: string) => void out.push(line));
+    await expect(run(['--enable', '--no-install'])).rejects.toThrow('exit:1');
+    expect(install.calls).toBe(0);
+    expect(readEnv()).toBe('');
+    expect(out.join('\n')).toMatch(/^ERROR: unsupported_platform$/m);
+    expect(out.join('\n')).toMatch(/Intel Macs.*NANOCLAW_OPENSHELL=false/);
+  });
+
+  it('--disable still works on an unsupported machine', async () => {
+    install.support = { ok: false, reason: 'no' };
+    fs.writeFileSync(envFile(), 'NANOCLAW_RUNTIME_DRIVER=openshell\n');
+    await run(['--disable']);
+    expect(readEnv()).toBe('');
   });
 
   it('--disable returns to the Docker default and clears an openshell gateway stamp', async () => {
