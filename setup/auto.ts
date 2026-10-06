@@ -386,7 +386,10 @@ async function main(): Promise<void> {
     // each via `ncl groups config update --provider` right after creating it
     // (the creation scripts inherit it and apply at create — see picked-provider). Existing groups switch the
     // same way (docs/provider-migration.md).
-    agentProvider = await askAgentProviderChoice();
+    // OpenShell's gateway relays Claude credentials only, so there is no
+    // runtime to choose: skip the picker (Claude's auth below then runs the
+    // OpenShell gateway's own sign-in via runGatewayAuth).
+    agentProvider = openshellEnabled ? await openShellAgentProvider() : await askAgentProviderChoice();
     setPickedProvider(agentProvider);
 
     // A pulled image bakes /app/node_modules and the CLI manifest, and every
@@ -984,7 +987,15 @@ async function runOpenShellUiChoice(): Promise<void> {
   );
   const url = res.terminal?.fields.URL;
   if (res.ok && url) {
-    p.log.info(brandBody(`OpenShell setup UI: ${url} — it has no login of its own; expose it only through your reverse proxy.`));
+    // Not where the initial credential goes: that is the Claude sign-in step
+    // later in this same run. The UI is for afterwards.
+    p.log.info(
+      brandBody(
+        `OpenShell setup UI is running at ${url} (no login of its own — expose it only through your reverse proxy). ` +
+          'Use it any time to manage providers, review and approve egress-policy proposals, or replace the Claude credential. ' +
+          'Setup continues here; you will connect Claude in a later step.',
+      ),
+    );
   } else {
     p.log.warn(
       brandBody(
@@ -1580,6 +1591,28 @@ async function chooseImageSource(): Promise<ImageSource | undefined> {
 
   setupLog.step('registry-login', 'interactive', durationMs, {});
   p.log.success(brandBody("Authenticated. Your assistant's sandbox will be fetched, not built."));
+}
+
+/**
+ * The agent runtime on an OpenShell install: always Claude, never prompted.
+ * The OpenShell gateway relays Anthropic credentials only (its auth.ts and
+ * credential-store.ts refuse any other provider), so Codex/OpenCode/… cannot
+ * work there and are not offered. A preset naming another provider is a
+ * contradiction and stops setup rather than being silently overridden.
+ */
+async function openShellAgentProvider(): Promise<string> {
+  const preset = process.env.NANOCLAW_AGENT_PROVIDER?.trim().toLowerCase();
+  if (preset && preset !== 'claude') {
+    await fail(
+      'auth',
+      `NANOCLAW_AGENT_PROVIDER=${preset} can't be used with OpenShell sandboxing.`,
+      'The OpenShell gateway relays Claude credentials only. Unset NANOCLAW_AGENT_PROVIDER (or set it to claude), or re-run setup without OpenShell.',
+    );
+  }
+  setupLog.userInput('agent_provider', 'claude');
+  phEmit('agent_provider_chosen', { provider: 'claude', ...(preset ? { preset: true } : {}), openshell: true });
+  p.log.info(brandBody('OpenShell sandboxing runs Claude — connecting your Claude account next.'));
+  return 'claude';
 }
 
 async function askAgentProviderChoice(): Promise<string> {

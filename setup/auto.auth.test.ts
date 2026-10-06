@@ -10,6 +10,10 @@ const fixture = vi.hoisted(() => ({
   loadHostContractModules: vi.fn(),
   order: [] as string[],
   opencodeInstalled: true,
+  /** The real claude entry (setup/providers/claude.ts) has no runAuth; most tests here keep one as a tripwire. */
+  claudeHasRunAuth: true,
+  runGatewayAuth: vi.fn(),
+  quietSteps: [] as string[],
 }));
 vi.mock('./providers/index.js', () => ({}));
 vi.mock('./providers/registry.js', () => {
@@ -21,7 +25,11 @@ vi.mock('./providers/registry.js', () => {
     runInstallCheck: fixture.runInstallCheck,
   };
   const claude = { ...entry, value: 'claude', label: 'Claude' };
-  const entries = () => (fixture.opencodeInstalled ? [claude, entry] : [claude]);
+  const realClaude = { value: 'claude', label: 'Claude', hint: '' };
+  const entries = () => {
+    const c = fixture.claudeHasRunAuth ? claude : realClaude;
+    return fixture.opencodeInstalled ? [c, entry] : [c];
+  };
   return {
     getSetupProvider: (name: string) => entries().find((provider) => provider.value === name),
     listSetupProviders: entries,
@@ -53,6 +61,21 @@ vi.mock('./lib/diagnostics.js', () => ({ emit: vi.fn() }));
 vi.mock('./lib/runner.js', async (original) => ({
   ...(await original<typeof import('./lib/runner.js')>()),
   fail: fixture.fail,
+  // Only the OpenShell tests below reach a quiet step; everything else here skips them.
+  runQuietStep: async (step: string) => {
+    fixture.quietSteps.push(step);
+    return {
+      ok: true,
+      exitCode: 0,
+      blocks: [],
+      transcript: '',
+      terminal: { type: 'X', fields: { STATUS: 'success' } },
+    };
+  },
+}));
+vi.mock('./gateways/install.js', async (original) => ({
+  ...(await original<typeof import('./gateways/install.js')>()),
+  runGatewayAuth: fixture.runGatewayAuth,
 }));
 vi.mock('./set-env.js', () => ({ upsertEnvVar: fixture.upsertEnvVar }));
 vi.mock('@clack/prompts', () => ({
@@ -85,6 +108,11 @@ beforeEach(() => {
     fixture.order.push('load-contracts');
   });
   fixture.order = [];
+  fixture.claudeHasRunAuth = true;
+  fixture.quietSteps = [];
+  fixture.runGatewayAuth.mockImplementation(() => {
+    throw new Error('gateway auth boundary');
+  });
 });
 afterEach(() => {
   vi.restoreAllMocks();
@@ -208,5 +236,79 @@ describe('setup wizard interactive provider choice', () => {
     expect(fixture.runAuth).not.toHaveBeenCalled();
     expect(fixture.upsertEnvVar).not.toHaveBeenCalled();
     expect(process.exit).toHaveBeenCalledWith(1);
+  });
+});
+
+describe('setup wizard provider choice with OpenShell sandboxing', () => {
+  // The real wizard path: OpenShell enabled by its flag, its quiet step stubbed,
+  // the gateway step skipped (gatewayKind is still forced to openshell).
+  function enableOpenShell(): void {
+    vi.stubEnv('NANOCLAW_OPENSHELL', 'true');
+    vi.stubEnv('NANOCLAW_OPENSHELL_UI', '');
+    vi.stubEnv('NANOCLAW_GATEWAY_PROVIDER', '');
+    vi.stubEnv(
+      'NANOCLAW_SKIP',
+      'environment,container,gateway,mounts,service,cli-agent,timezone,channel,verify,first-chat',
+    );
+    fixture.claudeHasRunAuth = false; // as setup/providers/claude.ts registers it
+  }
+
+  it('resolves to claude without the picker, and Claude auth goes to the OpenShell gateway’s sign-in', async () => {
+    enableOpenShell();
+    vi.stubEnv('NANOCLAW_AGENT_PROVIDER', '');
+
+    await runWizardUntilExit();
+
+    expect(fixture.quietSteps).toEqual(['openshell']);
+    expect(fixture.brightSelect).not.toHaveBeenCalled();
+    expect(fixture.runGatewayAuth).toHaveBeenCalledWith('openshell', 'claude');
+    expect(fixture.runAuth).not.toHaveBeenCalled();
+    expect(fixture.applyProviderSkill).not.toHaveBeenCalled();
+  });
+
+  it('a claude preset is fine; still no picker', async () => {
+    enableOpenShell();
+    vi.stubEnv('NANOCLAW_AGENT_PROVIDER', 'claude');
+
+    await runWizardUntilExit();
+
+    expect(fixture.brightSelect).not.toHaveBeenCalled();
+    expect(fixture.runGatewayAuth).toHaveBeenCalledWith('openshell', 'claude');
+  });
+
+  it('a non-claude preset is refused with a clear error, not silently overridden', async () => {
+    enableOpenShell();
+    vi.stubEnv('NANOCLAW_AGENT_PROVIDER', 'opencode');
+
+    await runWizardUntilExit();
+
+    expect(fixture.fail).toHaveBeenCalledWith(
+      'auth',
+      "NANOCLAW_AGENT_PROVIDER=opencode can't be used with OpenShell sandboxing.",
+      expect.stringMatching(/relays Claude credentials only/),
+    );
+    expect(fixture.brightSelect).not.toHaveBeenCalled();
+    expect(fixture.runGatewayAuth).not.toHaveBeenCalled();
+    expect(fixture.runAuth).not.toHaveBeenCalled();
+    expect(fixture.upsertEnvVar).not.toHaveBeenCalled();
+  });
+
+  it('without OpenShell the full picker is unchanged (claude and opencode offered)', async () => {
+    vi.stubEnv('NANOCLAW_AGENT_PROVIDER', '');
+    fixture.claudeHasRunAuth = false;
+    fixture.runAuth.mockRejectedValue(new Error('authentication boundary'));
+
+    await runWizardUntilExit();
+
+    expect(fixture.quietSteps).toEqual([]);
+    expect(fixture.brightSelect).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: 'Which agent runtime should power your assistant?',
+        options: expect.arrayContaining([
+          expect.objectContaining({ value: 'claude' }),
+          expect.objectContaining({ value: 'opencode' }),
+        ]),
+      }),
+    );
   });
 });

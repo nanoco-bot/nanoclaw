@@ -435,8 +435,8 @@ export function serviceStatusFields(loc: UiServiceLocation): Record<string, stri
 export async function askOpenShellUi(): Promise<boolean> {
   const answer = await p.confirm({
     message:
-      'Also start the OpenShell setup web UI? (credential, providers, egress approvals; runs in the background on port ' +
-      `${DEFAULT_UI_PORT} by default, with no login of its own)`,
+      'Also start the OpenShell setup web UI? (manage providers, approve egress-policy proposals, replace the Claude ' +
+      `credential later; runs in the background on port ${DEFAULT_UI_PORT} by default, with no login of its own)`,
     initialValue: false,
   });
   return !p.isCancel(answer) && answer === true;
