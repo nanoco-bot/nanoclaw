@@ -14,6 +14,10 @@ const fixture = vi.hoisted(() => ({
   claudeHasRunAuth: true,
   runGatewayAuth: vi.fn(),
   quietSteps: [] as string[],
+  /** Ordered record of the steps the order tests care about. */
+  sequence: [] as string[],
+  /** undefined = the real getPlatform(). */
+  platform: undefined as string | undefined,
 }));
 vi.mock('./providers/index.js', () => ({}));
 vi.mock('./providers/registry.js', () => {
@@ -55,7 +59,18 @@ vi.mock('./lib/setup-config-parse.js', () => ({
   readFromEnv: () => ({}),
   applyToEnv: vi.fn(),
 }));
-vi.mock('./environment.js', () => ({ readEnvKey: () => undefined }));
+vi.mock('./environment.js', () => ({
+  readEnvKey: () => undefined,
+  // First thing after the service step (the cli-agent check): the order tests end the run here.
+  detectRegisteredGroups: async () => {
+    fixture.sequence.push('end');
+    throw new Error('post-service boundary');
+  },
+}));
+vi.mock('./platform.js', async (original) => {
+  const real = await original<typeof import('./platform.js')>();
+  return { ...real, getPlatform: () => fixture.platform ?? real.getPlatform() };
+});
 vi.mock('./logs.js', () => ({ userInput: vi.fn() }));
 vi.mock('./lib/diagnostics.js', () => ({ emit: vi.fn() }));
 vi.mock('./lib/runner.js', async (original) => ({
@@ -64,6 +79,7 @@ vi.mock('./lib/runner.js', async (original) => ({
   // Only the OpenShell tests below reach a quiet step; everything else here skips them.
   runQuietStep: async (step: string) => {
     fixture.quietSteps.push(step);
+    fixture.sequence.push(`step:${step}`);
     return {
       ok: true,
       exitCode: 0,
@@ -110,6 +126,8 @@ beforeEach(() => {
   fixture.order = [];
   fixture.claudeHasRunAuth = true;
   fixture.quietSteps = [];
+  fixture.sequence = [];
+  fixture.platform = undefined;
   fixture.runGatewayAuth.mockImplementation(() => {
     throw new Error('gateway auth boundary');
   });
@@ -312,3 +330,84 @@ describe('setup wizard provider choice with OpenShell sandboxing', () => {
     );
   });
 });
+
+describe('setup wizard step order: agent auth vs the service step', () => {
+  // mounts + service run (mocked); cli-agent is not skipped so the run ends at its check, right after service.
+  const SKIP_BASE = 'environment,container,gateway,echo-reminder,timezone,channel,verify,first-chat';
+
+  function recordAuth(): void {
+    fixture.runGatewayAuth.mockImplementation((gateway: string, provider: string) => {
+      fixture.sequence.push(`gateway-auth:${gateway}:${provider}`);
+    });
+    fixture.runAuth.mockImplementation(async () => {
+      fixture.sequence.push('provider-auth');
+    });
+  }
+
+  function openShell(platform: string): void {
+    fixture.platform = platform;
+    fixture.claudeHasRunAuth = false; // as setup/providers/claude.ts registers it
+    vi.stubEnv('NANOCLAW_OPENSHELL', 'true');
+    vi.stubEnv('NANOCLAW_OPENSHELL_UI', '');
+    vi.stubEnv('NANOCLAW_GATEWAY_PROVIDER', '');
+    vi.stubEnv('NANOCLAW_AGENT_PROVIDER', '');
+    vi.stubEnv('NANOCLAW_SKIP', SKIP_BASE);
+    recordAuth();
+  }
+
+  function otherGateway(platform: string, gateway: string, provider: string): void {
+    fixture.platform = platform;
+    fixture.claudeHasRunAuth = false;
+    vi.stubEnv('NANOCLAW_OPENSHELL', '');
+    vi.stubEnv('NANOCLAW_GATEWAY_PROVIDER', gateway);
+    vi.stubEnv('NANOCLAW_AGENT_PROVIDER', provider);
+    vi.stubEnv('NANOCLAW_SKIP', `openshell,${SKIP_BASE}`);
+    recordAuth();
+  }
+
+  it('macOS + OpenShell: the service step runs BEFORE gateway auth (its plist must exist first)', async () => {
+    openShell('macos');
+    await runWizardUntilExit();
+    expect(fixture.sequence).toEqual([
+      'step:openshell',
+      'step:mounts',
+      'step:service',
+      'gateway-auth:openshell:claude',
+      'end',
+    ]);
+    expect(fixture.upsertEnvVar).toHaveBeenCalledWith('DEFAULT_AGENT_PROVIDER', 'claude');
+  });
+
+  it('Linux + OpenShell: unchanged — auth before mounts and service (the drop-in may precede its unit)', async () => {
+    openShell('linux');
+    await runWizardUntilExit();
+    expect(fixture.sequence).toEqual([
+      'step:openshell',
+      'gateway-auth:openshell:claude',
+      'step:mounts',
+      'step:service',
+      'end',
+    ]);
+  });
+
+  it.each([
+    ['macos', 'onecli'],
+    ['linux', 'onecli'],
+    ['macos', 'iron-proxy'],
+    ['linux', 'iron-proxy'],
+  ])('%s + %s gateway (Claude via gateway auth): unchanged — auth, then mounts, then service', async (platform, gateway) => {
+    otherGateway(platform, gateway, 'claude');
+    await runWizardUntilExit();
+    expect(fixture.sequence).toEqual([`gateway-auth:${gateway}:claude`, 'step:mounts', 'step:service', 'end']);
+  });
+
+  it.each(['macos', 'linux'])(
+    '%s + a provider with its own auth (OpenCode): unchanged — auth before the service build',
+    async (platform) => {
+      otherGateway(platform, 'onecli', 'opencode');
+      await runWizardUntilExit();
+      expect(fixture.sequence).toEqual(['provider-auth', 'step:mounts', 'step:service', 'end']);
+    },
+  );
+});
+

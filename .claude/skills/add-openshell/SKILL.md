@@ -42,7 +42,7 @@ import './openshell.js';
 
 The relay listens on `127.0.0.1` at this install's own port, `NANOCLAW_OPENSHELL_MODEL_RELAY_PORT`. Setup picks a free port per install and writes the same value to `NANOCLAW_OPENSHELL_GATEWAY_PORTS`, the sandbox egress allow-list. Sandboxes reach the relay as `host.openshell.internal`. If the relay cannot bind its port, the gateway reports itself unavailable and NanoClaw admits no sessions, so a sandbox is never pointed at a port another copy holds.
 
-The relay reads `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN` from the NanoClaw service environment. The sign-in step (`scripts/auth.ts`) writes it to this install's systemd drop-in, `<unit>.service.d/credential.conf`, with mode `0600`. It is never written to `.env`. Agents receive only `ANTHROPIC_AUTH_TOKEN=gateway-managed`. Only the Claude provider is supported, on Linux with systemd. Without a credential, sessions are refused and the chat is told why.
+The relay reads `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN` from the NanoClaw service environment. The sign-in step (`scripts/auth.ts`) writes it where the service reads its environment. On Linux that is this install's systemd drop-in, `<unit>.service.d/credential.conf`, with mode `0600`. On macOS it is the `EnvironmentVariables` of the NanoClaw LaunchAgent plist (owner-only), so the setup wizard installs the service before the sign-in on macOS. It is never written to `.env`. Agents receive only `ANTHROPIC_AUTH_TOKEN=gateway-managed`. Only the Claude provider is supported, on Linux with systemd or on macOS. Without a credential, sessions are refused and the chat is told why.
 
 ## Policy operations
 
