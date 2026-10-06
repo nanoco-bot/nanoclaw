@@ -8,8 +8,10 @@
  * (NANOCLAW_CLAUDE_CODE_OAUTH_TOKEN / CLAUDE_CODE_OAUTH_TOKEN /
  * NANOCLAW_ANTHROPIC_API_KEY / ANTHROPIC_API_KEY), a legacy value found in
  * `.env` (moved out of it), a Claude subscription sign-in, or a pasted token
- * or key — and writes it to this install's 0600 systemd drop-in
- * (`<unit>.service.d/credential.conf`). Never to `.env`, never to an agent.
+ * or key — and writes it where this install's service reads its environment:
+ * on Linux the 0600 systemd drop-in (`<unit>.service.d/credential.conf`), on
+ * macOS the owner-only LaunchAgent plist's EnvironmentVariables. Never to
+ * `.env`, never to an agent. Hosts with neither systemd nor launchd are refused.
  */
 import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -21,14 +23,16 @@ import * as p from '@clack/prompts';
 
 import {
   CREDENTIAL_ENV,
+  assertServiceReady,
+  credentialLocation,
   inspectServiceCredential,
+  isLaunchd,
   suppliedCredential,
-  unitLocation,
   writeCredentialDropIn,
+  writeLaunchdCredential,
   type ModelCredential,
   type UnitLocation,
 } from '../../../../setup/lib/openshell-credential.js';
-import { getServiceManager } from '../../../../setup/platform.js';
 
 type Method = 'subscription' | 'oauth' | 'api' | 'skip';
 
@@ -132,13 +136,9 @@ export async function run(agentProvider = process.argv[2] || 'claude', root = pr
       `The OpenShell gateway relays Anthropic model credentials only; provider '${agentProvider}' is not supported with it.`,
     );
   }
-  if (getServiceManager() !== 'systemd') {
-    throw new Error(
-      'The OpenShell gateway installs its model credential as a systemd drop-in; this host has no systemd service manager. ' +
-        'This version supports OpenShell on Linux with systemd only.',
-    );
-  }
-  const loc = unitLocation(root);
+  // Linux+systemd or macOS; anything else (WSL / nohup) throws a clear refusal.
+  const loc = credentialLocation(root);
+  assertServiceReady(loc);
   const fresh = suppliedCredential() ?? takeLegacyEnvCredential(root);
   if (!fresh) {
     const existing = inspectServiceCredential(loc);
@@ -156,6 +156,13 @@ export async function run(agentProvider = process.argv[2] || 'claude', root = pr
         '(or NANOCLAW_CLAUDE_CODE_OAUTH_TOKEN / NANOCLAW_ANTHROPIC_API_KEY) and re-run, or run setup interactively. ' +
         'Agents cannot reach the model until it is set.',
     );
+  }
+  if (isLaunchd(loc)) {
+    writeLaunchdCredential(loc, cred); // includes the service's unload → load → kickstart
+    p.log.success(
+      `Claude credential (${CREDENTIAL_ENV[cred.kind]}) stored for the OpenShell relay in ${loc.plistPath} (owner-only); the service was reloaded with it.`,
+    );
+    return;
   }
   writeCredentialDropIn(loc, cred);
   const note = applyToService(loc);

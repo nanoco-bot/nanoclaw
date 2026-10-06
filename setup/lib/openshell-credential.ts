@@ -9,7 +9,14 @@
  * configured Environment, else the drop-in file), so it cannot report
  * "configured" while the relay sees nothing.
  *
- * systemd (Linux) only in this version; launchd/nohup installs are refused
+ * macOS: the same host service runs as a LaunchAgent, and launchd has no
+ * drop-ins or env files, so the credential goes into that plist's
+ * EnvironmentVariables dict (the plist setup/service.ts writes owner-only,
+ * which already carries proxy variables the same way), followed by the
+ * service's own unload → load → kickstart. Verify reads it back from the
+ * plist. setup/service.ts carries it across later rewrites of the plist.
+ *
+ * Anything else (Linux without systemd: WSL / the nohup fallback) is refused
  * explicitly rather than silently left without a credential.
  */
 import { execFileSync } from 'child_process';
@@ -18,7 +25,10 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 
-import { getSystemdUnit } from '../../src/install-slug.js';
+import { getLaunchdLabel, getSystemdUnit } from '../../src/install-slug.js';
+import { getPlatform, getServiceManager } from '../platform.js';
+import { reloadLaunchAgent, writeOwnerOnly } from '../service.js';
+import { RELAY_CREDENTIAL_KEYS, editPlistEnvironment, readPlistEnvironment } from './launchd-plist.js';
 
 export type CredentialKind = 'api-key' | 'oauth';
 export interface ModelCredential {
@@ -129,11 +139,12 @@ const realExec: Exec = (cmd, args) =>
 
 /** What the relay will see. Values are never returned, only the kind. */
 export function inspectServiceCredential(
-  loc: UnitLocation,
+  loc: UnitLocation | LaunchdCredentialLocation,
   deps: { exec?: Exec; readFile?: (p: string) => string } = {},
 ): ServiceCredential {
-  const exec = deps.exec ?? realExec;
   const readFile = deps.readFile ?? ((p: string) => fs.readFileSync(p, 'utf-8'));
+  if (isLaunchd(loc)) return inspectLaunchdCredential(loc, readFile);
+  const exec = deps.exec ?? realExec;
   const [cmd, ...prefix] = loc.systemctl;
   try {
     const out = exec(cmd, [...prefix, 'show', loc.unit, '-p', 'MainPID', '-p', 'Environment']);
@@ -155,4 +166,133 @@ export function inspectServiceCredential(
   } catch {
     return { kind: 'none', source: 'unavailable' };
   }
+}
+
+// ---------------------------------------------------------------------------
+// macOS (launchd) and platform selection
+// ---------------------------------------------------------------------------
+
+export interface LaunchdCredentialLocation {
+  kind: 'launchd';
+  /** The NanoClaw host service's launchd label (setup/service.ts setupLaunchd). */
+  label: string;
+  plistPath: string;
+}
+
+export type CredentialLocation = UnitLocation | LaunchdCredentialLocation;
+
+export function isLaunchd(loc: CredentialLocation): loc is LaunchdCredentialLocation {
+  return (loc as { kind?: string }).kind === 'launchd';
+}
+
+export function launchdLocation(
+  projectRoot: string = process.cwd(),
+  opts: { home?: string } = {},
+): LaunchdCredentialLocation {
+  const label = getLaunchdLabel(projectRoot);
+  return {
+    kind: 'launchd',
+    label,
+    plistPath: path.join(opts.home ?? os.homedir(), 'Library', 'LaunchAgents', `${label}.plist`),
+  };
+}
+
+export const UNSUPPORTED_SERVICE_MANAGER =
+  'The OpenShell gateway installs its model credential into the NanoClaw service definition ' +
+  '(a systemd drop-in on Linux, the LaunchAgent plist on macOS); this host has neither systemd nor launchd. ' +
+  'This version supports OpenShell on Linux with systemd, or on macOS.';
+
+/** Where this host's service gets its credential; throws on hosts with no supported service manager. */
+export function credentialLocation(
+  projectRoot: string = process.cwd(),
+  opts: { platform?: string; serviceManager?: string; root?: boolean; home?: string } = {},
+): CredentialLocation {
+  const platform = opts.platform ?? getPlatform();
+  if (platform === 'macos') return launchdLocation(projectRoot, { home: opts.home });
+  if (platform === 'linux' && (opts.serviceManager ?? getServiceManager()) === 'systemd') {
+    return unitLocation(projectRoot, { root: opts.root, home: opts.home });
+  }
+  throw new Error(UNSUPPORTED_SERVICE_MANAGER);
+}
+
+/**
+ * Put the credential into the LaunchAgent plist's EnvironmentVariables:
+ * this key replaced in place (or added), the other credential variable
+ * removed (exactly one, as with the drop-in — and an older API key would
+ * otherwise win over a new OAuth token), every other byte untouched. Written
+ * owner-only via rename, then the service is reloaded the way setupLaunchd
+ * does it.
+ */
+export function writeLaunchdCredential(
+  loc: LaunchdCredentialLocation,
+  cred: ModelCredential,
+  deps: { reload?: (plistPath: string, label: string) => void } = {},
+): void {
+  assertSafeCredential(cred);
+  let plist: string;
+  try {
+    plist = fs.readFileSync(loc.plistPath, 'utf-8');
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+    throw new Error(missingLaunchAgentMessage(loc), { cause: err });
+  }
+  const key = CREDENTIAL_ENV[cred.kind];
+  const next = editPlistEnvironment(
+    plist,
+    { [key]: cred.value },
+    RELAY_CREDENTIAL_KEYS.filter((k) => k !== key),
+  );
+  writeOwnerOnly(loc.plistPath, next);
+  (deps.reload ?? reloadLaunchAgent)(loc.plistPath, loc.label);
+}
+
+function missingLaunchAgentMessage(loc: LaunchdCredentialLocation): string {
+  return (
+    `No NanoClaw LaunchAgent at ${loc.plistPath}, so there is no service to give the Claude credential to. ` +
+    'Install the service first (`pnpm exec tsx setup/index.ts --step service`), then re-run the sign-in ' +
+    '(`pnpm exec tsx setup/index.ts --step gateway-auth`).'
+  );
+}
+
+/**
+ * The plist must already exist — setup never invents one. Checked before any
+ * prompt, so nobody signs in only to be told there is nowhere to put it. (The
+ * systemd drop-in has no such requirement: it may precede its unit.)
+ */
+export function assertServiceReady(loc: CredentialLocation): void {
+  if (isLaunchd(loc) && !fs.existsSync(loc.plistPath)) throw new Error(missingLaunchAgentMessage(loc));
+}
+
+/** Write the credential where this platform's service reads it (drop-in or plist). */
+export function writeServiceCredential(
+  loc: CredentialLocation,
+  cred: ModelCredential,
+  deps: { reload?: (plistPath: string, label: string) => void } = {},
+): void {
+  if (isLaunchd(loc)) writeLaunchdCredential(loc, cred, deps);
+  else writeCredentialDropIn(loc, cred);
+}
+
+/** The plist's EnvironmentVariables is the service's environment on macOS (no /proc to read). */
+function inspectLaunchdCredential(loc: LaunchdCredentialLocation, readFile: (p: string) => string): ServiceCredential {
+  let plist: string;
+  try {
+    plist = readFile(loc.plistPath);
+  } catch {
+    return { kind: 'none', source: 'unavailable' };
+  }
+  const env = readPlistEnvironment(plist) ?? new Map<string, string>();
+  const listing = [...env].map(([k, v]) => `${k}=${v}`).join('\n');
+  return { kind: credentialKindIn(listing) ?? 'none', source: 'unit-environment' };
+}
+
+/** inspectServiceCredential for this host, or "unavailable" where no service manager is supported. */
+export function inspectInstallCredential(projectRoot: string = process.cwd()): ServiceCredential {
+  let loc: CredentialLocation;
+  try {
+    loc = credentialLocation(projectRoot);
+  } catch {
+    return { kind: 'none', source: 'unavailable' };
+  }
+  return inspectServiceCredential(loc);
 }

@@ -13,7 +13,7 @@ import { readEnvFile } from '../src/env.js';
 import { log } from '../src/log.js';
 import { getLaunchdLabel, getSystemdUnit } from '../src/install-slug.js';
 import { inspectCentralDb } from './central-db-inspection.js';
-import { inspectServiceCredential, unitLocation, type ServiceCredential } from './lib/openshell-credential.js';
+import { inspectInstallCredential, type ServiceCredential } from './lib/openshell-credential.js';
 import { inspectAgentImage, readImageSource } from './lib/registry-state.js';
 import { getPlatform, getServiceManager, hasSystemd, isRoot } from './platform.js';
 import { emitStatus } from './status.js';
@@ -283,7 +283,7 @@ export async function run(_args: string[]): Promise<void> {
  */
 export function checkCredentials(
   projectRoot: string,
-  inspect: (root: string) => ServiceCredential = (root) => inspectServiceCredential(unitLocation(root)),
+  inspect: (root: string) => ServiceCredential = (root) => inspectInstallCredential(root),
 ): { credentials: 'configured' | 'missing'; credentialSource: string } {
   const gatewayKind = (
     process.env.NANOCLAW_GATEWAY_PROVIDER ||

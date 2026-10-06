@@ -16,10 +16,19 @@ const manager = vi.hoisted(() => ({ value: 'systemd' as 'systemd' | 'launchd' | 
 vi.mock('../../../../setup/platform.js', async (original) => ({
   ...(await original<typeof import('../../../../setup/platform.js')>()),
   getServiceManager: () => manager.value,
+  // launchd ⇔ macOS, as setup/platform.ts derives it.
+  getPlatform: () => (manager.value === 'launchd' ? 'macos' : 'linux'),
+}));
+const reloads = vi.hoisted(() => ({ calls: [] as [string, string][] }));
+vi.mock('../../../../setup/service.js', async (original) => ({
+  ...(await original<typeof import('../../../../setup/service.js')>()),
+  reloadLaunchAgent: (plistPath: string, label: string) => {
+    reloads.calls.push([plistPath, label]);
+  },
 }));
 vi.mock('@clack/prompts', () => ({ log: { success: vi.fn(), warn: vi.fn() }, isCancel: () => false }));
 
-import { unitLocation } from '../../../../setup/lib/openshell-credential.js';
+import { launchdLocation, unitLocation } from '../../../../setup/lib/openshell-credential.js';
 import { run, takeLegacyEnvCredential } from './auth.js';
 
 let home: string;
@@ -40,6 +49,7 @@ beforeEach(() => {
   }
   vi.spyOn(process, 'getuid').mockReturnValue(1000); // user unit, never /etc/systemd
   systemctl.calls = [];
+  reloads.calls = [];
   manager.value = 'systemd';
 });
 afterEach(() => {
@@ -80,11 +90,40 @@ describe('OpenShell gateway auth step', () => {
     expect(fs.readFileSync(dropIn(), 'utf8')).toContain('sk-ant-api03-OLD');
   });
 
-  it('refuses other providers and hosts without systemd', async () => {
+  it('refuses other providers, and hosts with neither systemd nor launchd (WSL / nohup)', async () => {
     await expect(run('codex', root)).rejects.toThrow(/Anthropic model credentials only/);
-    manager.value = 'launchd';
+    manager.value = 'none';
     vi.stubEnv('ANTHROPIC_API_KEY', 'sk-ant-api03-FAKE');
-    await expect(run('claude', root)).rejects.toThrow(/systemd only/);
+    await expect(run('claude', root)).rejects.toThrow(/neither systemd nor launchd/);
+    expect(fs.existsSync(dropIn())).toBe(false);
+  });
+
+  it('macOS: accepted — writes the key into the NanoClaw LaunchAgent plist and reloads that service', async () => {
+    manager.value = 'launchd';
+    const loc = launchdLocation(root, { home });
+    fs.mkdirSync(path.dirname(loc.plistPath), { recursive: true });
+    fs.writeFileSync(
+      loc.plistPath,
+      '<?xml version="1.0" encoding="UTF-8"?>\n<plist version="1.0">\n<dict>\n    <key>Label</key>\n    <string>' +
+        loc.label +
+        '</string>\n    <key>EnvironmentVariables</key>\n    <dict>\n        <key>HOME</key>\n        <string>/Users/a</string>\n    </dict>\n</dict>\n</plist>',
+    );
+    vi.stubEnv('CLAUDE_CODE_OAUTH_TOKEN', 'sk-ant-oat01-FAKE');
+    await run('claude', root);
+    expect(fs.readFileSync(loc.plistPath, 'utf8')).toContain(
+      '<key>HOME</key>\n        <string>/Users/a</string>\n        <key>CLAUDE_CODE_OAUTH_TOKEN</key>\n        <string>sk-ant-oat01-FAKE</string>\n    </dict>',
+    );
+    expect(reloads.calls).toEqual([[loc.plistPath, loc.label]]);
+    expect(systemctl.calls).toEqual([]); // no systemd on macOS
+    expect(fs.existsSync(dropIn())).toBe(false);
+  });
+
+  it('macOS without the NanoClaw LaunchAgent: clear error before any prompt, nothing written', async () => {
+    manager.value = 'launchd';
+    const loc = launchdLocation(root, { home });
+    await expect(run('claude', root)).rejects.toThrow(/No NanoClaw LaunchAgent at .*--step service/);
+    expect(fs.existsSync(loc.plistPath)).toBe(false);
+    expect(reloads.calls).toEqual([]);
   });
 
   it('refuses two legacy credentials rather than guessing', () => {

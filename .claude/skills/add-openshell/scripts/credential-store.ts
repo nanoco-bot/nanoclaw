@@ -1,4 +1,4 @@
-import { inspectServiceCredential, unitLocation } from '../../../../setup/lib/openshell-credential.js';
+import { inspectInstallCredential } from '../../../../setup/lib/openshell-credential.js';
 import type { ProviderCredentialStore } from '../../../../setup/gateways/credential-store.js';
 
 /**
@@ -10,7 +10,7 @@ import type { ProviderCredentialStore } from '../../../../setup/gateways/credent
 export function createCredentialStore(root = process.cwd()): ProviderCredentialStore {
   return {
     async has(provider) {
-      return provider === 'claude' && inspectServiceCredential(unitLocation(root)).kind !== 'none';
+      return provider === 'claude' && inspectInstallCredential(root).kind !== 'none';
     },
     async save(provider) {
       throw new Error(
