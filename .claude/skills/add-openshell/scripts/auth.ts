@@ -25,6 +25,7 @@ import {
   CREDENTIAL_ENV,
   assertServiceReady,
   credentialLocation,
+  credentialMatchesLive,
   inspectServiceCredential,
   isLaunchd,
   suppliedCredential,
@@ -148,6 +149,14 @@ export async function run(agentProvider = process.argv[2] || 'claude', root = pr
       );
       return;
     }
+  } else if (credentialMatchesLive(fresh, loc)) {
+    // Re-run to rotate with the key the relay already has: nothing to write,
+    // and no reason to restart a running service (and drop its sessions).
+    const existing = inspectServiceCredential(loc);
+    p.log.success(
+      `Claude credential unchanged for the OpenShell relay (${existing.kind}, ${existing.source}) — nothing to restart.`,
+    );
+    return;
   }
   const cred = fresh ?? (process.stdin.isTTY ? await promptCredential() : undefined);
   if (!cred) {

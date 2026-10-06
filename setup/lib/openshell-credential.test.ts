@@ -90,7 +90,7 @@ describe('inspecting what the relay will see', () => {
         return 'HOME=/h\0PATH=/bin\0ANTHROPIC_API_KEY=sk-ant-api03-x\0';
       },
     });
-    expect(found).toEqual({ kind: 'api-key', source: 'running-service' });
+    expect(found).toMatchObject({ kind: 'api-key', source: 'running-service' });
   });
 
   it('a running service without the variable reads as missing, even if the drop-in exists on disk', () => {
@@ -106,7 +106,7 @@ describe('inspecting what the relay will see', () => {
       inspectServiceCredential(loc, {
         exec: () => 'MainPID=0\nEnvironment=HOME=/h CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-x\n',
       }),
-    ).toEqual({ kind: 'oauth', source: 'unit-environment' });
+    ).toMatchObject({ kind: 'oauth', source: 'unit-environment' });
     expect(inspectServiceCredential(loc, { exec: () => 'MainPID=0\nEnvironment=HOME=/h PATH=/bin\n' })).toEqual({
       kind: 'none',
       source: 'unit-environment',
@@ -122,7 +122,7 @@ describe('inspecting what the relay will see', () => {
         exec: noSystemctl,
         readFile: () => '[Service]\nEnvironment=ANTHROPIC_API_KEY=sk-x\n',
       }),
-    ).toEqual({ kind: 'api-key', source: 'drop-in-file' });
+    ).toMatchObject({ kind: 'api-key', source: 'drop-in-file' });
     expect(inspectServiceCredential(loc, { exec: noSystemctl, readFile: noSystemctl })).toEqual({
       kind: 'none',
       source: 'unavailable',

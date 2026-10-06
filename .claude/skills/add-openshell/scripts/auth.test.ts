@@ -68,7 +68,8 @@ describe('OpenShell gateway auth step', () => {
     expect(fs.statSync(dropIn()).mode & 0o777).toBe(0o600);
     expect(fs.readFileSync(path.join(root, '.env'), 'utf8')).toBe('NANOCLAW_GATEWAY_PROVIDER=openshell\n');
     // Tells systemd about it (here: no manager reachable, so only the attempt).
-    expect(systemctl.calls[0]).toEqual(['systemctl', '--user', 'daemon-reload']);
+    // (Before that, the rotation check asked systemd what the service has.)
+    expect(systemctl.calls.find((c) => c[2] !== 'show')).toEqual(['systemctl', '--user', 'daemon-reload']);
   });
 
   it('moves a credential an older setup left in .env into the drop-in and out of .env', async () => {

@@ -202,7 +202,10 @@ describe('reading it back on macOS', () => {
     });
     expect(inspectServiceCredential(loc, { readFile, exec })).toEqual({ kind: 'none', source: 'unit-environment' });
     writeLaunchdCredential(loc, { kind: 'oauth', value: 'sk-ant-oat01-FAKE' }, { reload });
-    expect(inspectServiceCredential(loc, { readFile, exec })).toEqual({ kind: 'oauth', source: 'unit-environment' });
+    expect(inspectServiceCredential(loc, { readFile, exec })).toMatchObject({
+      kind: 'oauth',
+      source: 'unit-environment',
+    });
     expect(readFile.mock.calls.every(([p]) => p === loc.plistPath)).toBe(true);
     expect(exec).not.toHaveBeenCalled();
   });

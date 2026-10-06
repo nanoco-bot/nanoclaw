@@ -20,7 +20,7 @@
  * explicitly rather than silently left without a credential.
  */
 import { execFileSync } from 'child_process';
-import { randomUUID } from 'crypto';
+import { createHmac, randomUUID } from 'crypto';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -127,17 +127,57 @@ export function credentialKindIn(listing: string): CredentialKind | undefined {
   return undefined;
 }
 
+/**
+ * The value of the credential variable `credentialKindIn` reports, from the
+ * same listing and with the same precedence. Module-private on purpose: the
+ * only thing that leaves this file is its hash (`credentialHash`).
+ */
+function credentialValueIn(listing: string, kind: CredentialKind): string | undefined {
+  const match = new RegExp(`(?:^|[\\s\\0"]|Environment=)${CREDENTIAL_ENV[kind]}=([^\\s\\0"]+)`, 'm').exec(listing);
+  return match?.[1];
+}
+
+/**
+ * Fixed HMAC key: domain separation, so this digest matches no other SHA-256
+ * of the same token anywhere else. Not a secret — the protection is that only
+ * a digest of a high-entropy token ever leaves this module, never the token.
+ */
+const CREDENTIAL_HASH_KEY = 'nanoclaw/openshell-relay-credential/v1';
+
+/**
+ * HMAC-SHA256 of a credential value, whitespace-normalized the way the paste
+ * prompt normalizes input (`.replace(/\s+/g, '')`), so the same key pasted
+ * with a stray newline or padding hashes the same. Compare, never log.
+ */
+export function credentialHash(value: string): string {
+  return createHmac('sha256', CREDENTIAL_HASH_KEY).update(value.replace(/\s+/g, '')).digest('hex');
+}
+
 export interface ServiceCredential {
   kind: CredentialKind | 'none';
   /** Where it was read: the live process, the unit as loaded by systemd, or the drop-in on disk. */
   source: 'running-service' | 'unit-environment' | 'drop-in-file' | 'unavailable';
+  /**
+   * `credentialHash` of the value the relay sees; present only when `kind` is
+   * not 'none'. The value itself is never returned. For comparison
+   * (`credentialMatchesLive`) only — not for logs, status blocks or the UI.
+   */
+  hash?: string;
+}
+
+/** One listing → kind + hash of that kind's value, never the value. */
+function fromListing(listing: string, source: ServiceCredential['source']): ServiceCredential {
+  const kind = credentialKindIn(listing);
+  if (!kind) return { kind: 'none', source };
+  const value = credentialValueIn(listing, kind);
+  return value ? { kind, source, hash: credentialHash(value) } : { kind, source };
 }
 
 type Exec = (cmd: string, args: string[]) => string;
 const realExec: Exec = (cmd, args) =>
   execFileSync(cmd, args, { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 10_000 });
 
-/** What the relay will see. Values are never returned, only the kind. */
+/** What the relay will see. Values are never returned, only the kind and a hash (`credentialHash`). */
 export function inspectServiceCredential(
   loc: UnitLocation | LaunchdCredentialLocation,
   deps: { exec?: Exec; readFile?: (p: string) => string } = {},
@@ -151,18 +191,18 @@ export function inspectServiceCredential(
     const pid = Number(out.match(/^MainPID=(\d+)/m)?.[1] ?? 0);
     if (pid > 0) {
       try {
-        return { kind: credentialKindIn(readFile(`/proc/${pid}/environ`)) ?? 'none', source: 'running-service' };
+        return fromListing(readFile(`/proc/${pid}/environ`), 'running-service');
       } catch {
         // Not readable (different user, non-Linux): fall back to the unit's Environment.
       }
     }
     const env = out.match(/^Environment=(.*)$/m)?.[1] ?? '';
-    return { kind: credentialKindIn(env) ?? 'none', source: 'unit-environment' };
+    return fromListing(env, 'unit-environment');
   } catch {
     // No systemd manager to ask: read the drop-in setup would have written.
   }
   try {
-    return { kind: credentialKindIn(readFile(loc.dropInPath)) ?? 'none', source: 'drop-in-file' };
+    return fromListing(readFile(loc.dropInPath), 'drop-in-file');
   } catch {
     return { kind: 'none', source: 'unavailable' };
   }
@@ -283,7 +323,23 @@ function inspectLaunchdCredential(loc: LaunchdCredentialLocation, readFile: (p: 
   }
   const env = readPlistEnvironment(plist) ?? new Map<string, string>();
   const listing = [...env].map(([k, v]) => `${k}=${v}`).join('\n');
-  return { kind: credentialKindIn(listing) ?? 'none', source: 'unit-environment' };
+  return fromListing(listing, 'unit-environment');
+}
+
+/**
+ * Is `cred` exactly what the relay already sees — same kind, same value (by
+ * hash)? Lets a re-run with an unchanged key skip the write and the service
+ * restart. Compares against the RUNNING service first (inspectServiceCredential's
+ * order), so a new drop-in the service has not been restarted onto yet still
+ * reads as "different" and gets applied.
+ */
+export function credentialMatchesLive(
+  cred: ModelCredential,
+  loc: CredentialLocation,
+  deps: { exec?: Exec; readFile?: (p: string) => string } = {},
+): boolean {
+  const live = inspectServiceCredential(loc, deps);
+  return live.kind === cred.kind && live.hash !== undefined && live.hash === credentialHash(cred.value);
 }
 
 /** inspectServiceCredential for this host, or "unavailable" where no service manager is supported. */
