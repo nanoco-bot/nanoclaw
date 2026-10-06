@@ -25,11 +25,15 @@ import type { CallerContext } from '../frame.js';
 import { listCommands } from '../registry.js';
 // The full resource barrel: proves no name collision with any core resource.
 import './index.js';
-import { setOpenShellPolicyCli } from './openshell-policy.js';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
+import { setOpenShellPolicyCli, setOpenShellPolicyLog } from './openshell-policy.js';
 
 registerResourceHelpCommands();
 
-const VERBS = ['list', 'view', 'approve', 'reject', 'add-rule'] as const;
+const VERBS = ['list', 'view', 'approve', 'reject', 'add-rule', 'apply-preset'] as const;
 const host: CallerContext = { caller: 'host' };
 const agent: CallerContext = { caller: 'agent', sessionId: 's', agentGroupId: 'ag-1', messagingGroupId: 'mg' };
 
@@ -59,14 +63,17 @@ beforeEach(async () => {
   calls = [];
   replies = {};
   setOpenShellPolicyCli(fakeCli);
+  // Never the checkout's own data/.
+  setOpenShellPolicyLog(path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'os-policy-log-')), 'changes.jsonl'));
 });
 afterEach(async () => {
   setOpenShellPolicyCli(null);
+  setOpenShellPolicyLog(null);
   await closeDb();
 });
 
 describe('openshell-policy resource', () => {
-  it('registers exactly the five verbs, all operator-only, without touching `policies`', () => {
+  it('registers exactly the six verbs, all operator-only, without touching `policies`', () => {
     const names = listCommands()
       .map((c) => c.name)
       .filter((n) => n.startsWith('openshell-policy-') && n !== 'openshell-policy-help');

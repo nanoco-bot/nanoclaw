@@ -2,15 +2,22 @@
  * `ncl openshell-policy-*` — operate NVIDIA OpenShell sandbox policy from the
  * host. Flat command registry: resource `openshell-policy` (distinct from the
  * unrelated core `policies` resource, agent-to-agent message approval), verbs
- * list / view / approve / reject / add-rule.
+ * list / view / approve / reject / add-rule / apply-preset.
  *
  * Every command shells out to the `openshell` CLI this install is configured
  * with (OPENSHELL_BIN / OPENSHELL_GATEWAY, `.env` or environment — the same
  * CLI the session driver uses). There is no npm client for OpenShell's gRPC
  * API; the CLI is the supported surface.
  *
- * All five are hostOnly: sandbox policy is the boundary an agent runs inside,
+ * All six are hostOnly: sandbox policy is the boundary an agent runs inside,
  * so no agent may read or change it, whatever its cli_scope or approvals.
+ *
+ * Change log: every policy change add-rule or apply-preset sends to OpenShell
+ * (dry runs excluded, failed attempts included) is appended to
+ * `data/openshell-policy/changes.jsonl` — owner-only, append-only, one JSON
+ * line per `openshell policy update`. Preset rules also record the preset's
+ * name and version, so the trail reads "github preset v1 applied", not just
+ * raw rules.
  *
  * Coverage, stated plainly (OpenShell RFC 0002): list / approve / reject act
  * on live rule PROPOSALS, which exist only for network egress
@@ -18,7 +25,10 @@
  * sandbox starts and has no proposal flow. view / add-rule read and edit the
  * full policy document directly.
  */
-import { INSTALL_SLUG } from '../../config.js';
+import fs from 'node:fs';
+import path from 'node:path';
+
+import { DATA_DIR, INSTALL_SLUG } from '../../config.js';
 import { getSession } from '../../db/sessions.js';
 import { OpenShellCliError, type OpenShellCli } from '../../drivers/openshell/cli.js';
 import { configuredOpenShellCli } from '../../drivers/openshell/config.js';
@@ -35,13 +45,58 @@ import {
   type ProposalsState,
   type RuleStatus,
 } from '../../drivers/openshell/policy-commands.js';
+import { loadPreset, presetUpdateOptions } from '../../drivers/openshell/preset-registry.js';
 import { sandboxName } from '../../drivers/openshell/realize.js';
 import { registerResource, type ColumnDef } from '../crud.js';
+import type { CallerContext } from '../frame.js';
 
 /** Test seam: the CLI the commands run. */
 let cliFactory: () => OpenShellCli = () => configuredOpenShellCli();
 export function setOpenShellPolicyCli(factory: (() => OpenShellCli) | null): void {
   cliFactory = factory ?? (() => configuredOpenShellCli());
+}
+
+/** Test seam: where policy changes are logged. */
+const defaultLogPath = () => path.join(DATA_DIR, 'openshell-policy', 'changes.jsonl');
+let logPath: () => string = defaultLogPath;
+export function setOpenShellPolicyLog(file: string | null): void {
+  logPath = file ? () => file : defaultLogPath;
+}
+
+export interface PolicyChangeRecord {
+  ts: string;
+  verb: 'add-rule' | 'apply-preset';
+  caller: string;
+  sandbox: string;
+  /** The exact `openshell` argv sent. */
+  command: string[];
+  /** Whether OpenShell accepted it; failed attempts are logged too. */
+  ok: boolean;
+  error?: string;
+  /** apply-preset only: which preset (and which of its rules) produced this change. */
+  preset?: { name: string; version: number; rule: string };
+}
+
+function logChange(record: Omit<PolicyChangeRecord, 'ts'>): void {
+  const file = logPath();
+  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+  fs.appendFileSync(file, JSON.stringify({ ts: new Date().toISOString(), ...record }) + '\n', { mode: 0o600 });
+}
+
+/** Run one policy change and log it, whatever the outcome. */
+async function runLogged(
+  argv: string[],
+  record: Omit<PolicyChangeRecord, 'ts' | 'command' | 'ok' | 'error'>,
+  timeoutMs?: number,
+): Promise<string> {
+  try {
+    const output = await runCli(argv, timeoutMs);
+    logChange({ ...record, command: argv, ok: true });
+    return output;
+  } catch (err) {
+    logChange({ ...record, command: argv, ok: false, error: err instanceof Error ? err.message : String(err) });
+    throw err;
+  }
 }
 
 const TARGET_ARGS: ColumnDef[] = [
@@ -100,6 +155,31 @@ function render(data: unknown): string {
   const lines = [r.output.trimEnd()];
   if (r.note) lines.push('', `Note: ${r.note}`);
   return lines.filter((l, i) => l || i > 0).join('\n');
+}
+
+interface PresetApplyResult {
+  sandbox: string;
+  preset: { name: string; version: number; description: string };
+  rules: readonly { name: string; host: string; ports: readonly number[]; binaries: readonly string[] }[];
+  commands: string[][];
+  dryRun: boolean;
+  applied: number;
+  output: string;
+}
+
+function renderPreset(data: unknown): string {
+  const r = data as PresetApplyResult;
+  const lines = [
+    `${r.dryRun ? 'Dry run — nothing sent. ' : ''}Preset ${r.preset.name} v${r.preset.version} → sandbox ${r.sandbox}`,
+    r.preset.description,
+    '',
+    ...r.rules.map((rule) => `  ${rule.name}: ${rule.host}:${rule.ports.join(',')}  (${rule.binaries.join(', ')})`),
+    '',
+    r.dryRun ? 'Would run:' : `Applied ${r.applied} change(s):`,
+    ...r.commands.map((c) => `  openshell ${c.join(' ')}`),
+  ];
+  if (r.output) lines.push('', r.output);
+  return lines.join('\n');
 }
 
 const NETWORK_ONLY =
@@ -244,7 +324,7 @@ registerResource({
         'ncl openshell-policy add-rule --sandbox ncl-0123abcd --add-endpoint api.example.com:443 --binary /usr/bin/curl --dry-run',
         'ncl openshell-policy add-rule --session <session-id> --remove-rule example_api',
       ],
-      handler: async (args): Promise<PolicyCommandResult> => {
+      handler: async (args, ctx: CallerContext): Promise<PolicyCommandResult> => {
         const sandbox = await resolveSandbox(args);
         const command = policyUpdateArgs(sandbox, {
           addEndpoint: repeated(args.add_endpoint, '--add-endpoint'),
@@ -261,9 +341,81 @@ registerResource({
           ...(args.timeout !== undefined ? { timeout: args.timeout as number } : {}),
         });
         const waitSeconds = args.wait === true ? ((args.timeout as number | undefined) ?? 60) : 0;
-        return { sandbox, command, output: await runCli(command, 30_000 + waitSeconds * 1000) };
+        const timeoutMs = 30_000 + waitSeconds * 1000;
+        // OpenShell's own --dry-run changes nothing, so there is nothing to log.
+        const output =
+          args.dry_run === true
+            ? await runCli(command, timeoutMs)
+            : await runLogged(command, { verb: 'add-rule', caller: ctx.caller, sandbox }, timeoutMs);
+        return { sandbox, command, output };
       },
       formatHuman: render,
+    },
+    'apply-preset': {
+      access: 'approval',
+      hostOnly: true,
+      description:
+        'Apply a named, versioned egress preset (src/drivers/openshell/presets/<name>.yaml) to a sandbox: ' +
+        'each rule becomes the same `openshell policy update --add-endpoint host:port --binary … --rule-name <rule>` ' +
+        'that add-rule would run, one call per rule and port. Every change is logged with the preset name and version. ' +
+        '--dry-run prints the rules and commands without calling openshell.',
+      args: [
+        ...TARGET_ARGS,
+        { name: 'preset', type: 'string', required: true, description: 'Preset name, e.g. github.' },
+        { name: 'dry_run', type: 'boolean', description: 'Print the rules and commands; send nothing.' },
+        { name: 'wait', type: 'boolean', description: 'Wait for the sandbox to load each new revision.' },
+        { name: 'timeout', type: 'number', description: 'Seconds to wait with --wait (OpenShell default 60).' },
+      ],
+      examples: [
+        'ncl openshell-policy apply-preset --sandbox ncl-0123abcd --preset github --dry-run',
+        'ncl openshell-policy apply-preset --session <session-id> --preset github',
+      ],
+      handler: async (args, ctx: CallerContext): Promise<PresetApplyResult> => {
+        const sandbox = await resolveSandbox(args);
+        const preset = loadPreset(args.preset as string);
+        const steps = presetUpdateOptions(preset).map(({ rule, options }) => ({
+          rule,
+          command: policyUpdateArgs(sandbox, {
+            ...options,
+            wait: args.wait === true,
+            ...(args.timeout !== undefined ? { timeout: args.timeout as number } : {}),
+          }),
+        }));
+        const base = {
+          sandbox,
+          preset: { name: preset.name, version: preset.version, description: preset.description },
+          rules: preset.rules,
+          commands: steps.map((s) => s.command),
+        };
+        if (args.dry_run === true) return { ...base, dryRun: true, applied: 0, output: '' };
+        const waitSeconds = args.wait === true ? ((args.timeout as number | undefined) ?? 60) : 0;
+        const outputs: string[] = [];
+        for (const [i, step] of steps.entries()) {
+          try {
+            outputs.push(
+              await runLogged(
+                step.command,
+                {
+                  verb: 'apply-preset',
+                  caller: ctx.caller,
+                  sandbox,
+                  preset: { name: preset.name, version: preset.version, rule: step.rule },
+                },
+                30_000 + waitSeconds * 1000,
+              ),
+            );
+          } catch (err) {
+            // No rollback: OpenShell has no transaction across updates. Say exactly what landed.
+            throw new Error(
+              `preset ${preset.name} v${preset.version}: ${i} of ${steps.length} change(s) applied before rule ` +
+                `'${step.rule}' failed: ${err instanceof Error ? err.message : String(err)}`,
+              { cause: err },
+            );
+          }
+        }
+        return { ...base, dryRun: false, applied: steps.length, output: outputs.join('\n').trim() };
+      },
+      formatHuman: renderPreset,
     },
   },
 });

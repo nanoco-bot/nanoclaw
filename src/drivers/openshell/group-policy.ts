@@ -59,12 +59,20 @@ function fail(where: string, what: string): never {
   throw new Error(`OpenShell policy config: ${where}: ${what}`);
 }
 
-function stringArray(v: unknown, where: string): string[] {
-  if (!Array.isArray(v) || !v.every((s) => typeof s === 'string')) fail(where, 'must be an array of strings');
+type Fail = (where: string, what: string) => never;
+
+function stringArray(v: unknown, where: string, onFail: Fail = fail): string[] {
+  if (!Array.isArray(v) || !v.every((s) => typeof s === 'string')) onFail(where, 'must be an array of strings');
   return v as string[];
 }
 
-function parseRule(v: unknown, where: string): EgressRule {
+/**
+ * One EgressRule, strictly: unknown keys and wrong types fail. Exported for the
+ * egress presets (preset-registry.ts), which use this exact rule shape and pass
+ * their own `onFail` so errors name the preset file, not this config.
+ */
+export function parseRule(v: unknown, where: string, onFail: Fail = fail): EgressRule {
+  const fail: Fail = onFail;
   if (!v || typeof v !== 'object' || Array.isArray(v)) fail(where, 'must be an object');
   const o = v as Record<string, unknown>;
   for (const k of Object.keys(o))
@@ -77,7 +85,7 @@ function parseRule(v: unknown, where: string): EgressRule {
     name: o.name,
     host: o.host,
     ports: o.ports as number[],
-    binaries: stringArray(o.binaries, `${where}.binaries`),
+    binaries: stringArray(o.binaries, `${where}.binaries`, fail),
   };
 }
 
