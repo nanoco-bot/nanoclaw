@@ -28,6 +28,7 @@ import path from 'node:path';
 
 import { realOpenShellCli, type OpenShellCli } from './cli.js';
 import {
+  assertDriverConfigMatchesPolicy,
   compileDriverConfig,
   compilePolicy,
   renderPolicyYaml,
@@ -36,6 +37,7 @@ import {
   type PolicyOptions,
 } from './policy.js';
 import { policyOptionsFor } from './group-policy.js';
+import { assertHostMounts, type Lstat } from './host-mount.js';
 import {
   createArgs,
   handleStatus,
@@ -92,6 +94,8 @@ export interface OpenShellDriverOptions extends MountPolicy {
   pollIntervalMs?: number;
   /** Where the transient policy file is written for `--policy`. Default os.tmpdir(). */
   tmpDir?: string;
+  /** fs.lstatSync, injectable for tests of the mount-source symlink check (host-mount.ts). */
+  lstat?: Lstat;
   logger?: Logger;
 }
 
@@ -199,6 +203,10 @@ export class OpenShellSessionDriver implements SessionDriver {
     // The shared host-side layer, same call the Docker driver makes: mount
     // classes, canonical paths, tier, secret-shaped env. Not re-implemented.
     validateSpec(spec, this.#policy, this.capabilities());
+    // The filesystem half validateSpec deliberately leaves out (it is pure):
+    // no symlink component in any mount source, no group-state/extra mount over
+    // the image's system tree. Before anything is compiled from the paths.
+    assertHostMounts(spec, this.#opts.lstat);
 
     const extra = spec.containers.filter((c) => c.role !== 'agent');
     if (extra.length > 0) {
@@ -220,6 +228,8 @@ export class OpenShellSessionDriver implements SessionDriver {
       policy: compilePolicy(spec, agent, policyOptionsFor(spec, this.#opts.policy ?? {}, this.#opts.groupPolicy)),
       driverConfig: compileDriverConfig(agent),
     };
+    // The bind list and the Landlock policy must agree on every mount's access.
+    assertDriverConfigMatchesPolicy(pending.policy, pending.driverConfig);
     sandboxLabels(spec, agent); // labels are realized verbatim or refused — refuse now, not at create
 
     this.#remember(spec.key);

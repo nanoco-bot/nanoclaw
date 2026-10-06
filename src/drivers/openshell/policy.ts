@@ -19,6 +19,7 @@
  */
 import {
   deniedByPolicy,
+  hasUnsafeTerminalText,
   specInvalid,
   type ContainerSpec,
   type MountClass,
@@ -161,8 +162,10 @@ export function mountAccess(mount: MountSpec, role: string): PolicyAccess {
   }
 }
 
-/** Absolute, no empty / '.' / '..' segments, within the schema's byte limit. */
+/** Absolute, no empty / '.' / '..' segments, no control/format characters, within the schema's byte limit. */
 export function assertPolicyPath(path: string, what: string): void {
+  // Checked first, and the path is NOT echoed: printing it would emit the very characters refused.
+  if (hasUnsafeTerminalText(path)) throw specInvalid(`${what} contains control or format characters`);
   if (!path.startsWith('/')) throw specInvalid(`${what} '${path}' must be absolute`);
   if (Buffer.byteLength(path) > MAX_PATH_BYTES) throw specInvalid(`${what} exceeds ${MAX_PATH_BYTES} bytes`);
   if (path === '/') return;
@@ -253,10 +256,37 @@ export function compileDriverConfig(container: ContainerSpec): DriverConfig | nu
         type: 'bind' as const,
         source: m.hostPath,
         target: m.containerPath,
-        read_only: m.mode !== 'rw',
+        // The same rule compilePolicy() files the path by — one source of truth,
+        // so Docker can never bind writable what Landlock was told is read-only
+        // (or refuse a write Landlock would allow). Anything not explicitly
+        // read_write comes out read-only.
+        read_only: mountAccess(m, container.role) !== 'read_write',
       })),
     },
   };
+}
+
+/**
+ * Cross-check of the two artifacts prepare() hands start(): each bind is
+ * writable exactly when its target is in the policy's read_write list. With
+ * both derived from mountAccess() this cannot fire today; it is the tripwire
+ * for the day one of them changes alone.
+ */
+export function assertDriverConfigMatchesPolicy(policy: CompiledPolicy, config: DriverConfig | null): void {
+  const rw = new Set(policy.filesystem_policy.read_write);
+  const ro = new Set(policy.filesystem_policy.read_only);
+  for (const bind of config?.docker.mounts ?? []) {
+    const writable = rw.has(bind.target);
+    if (!writable && !ro.has(bind.target)) {
+      throw specInvalid(`bind target ${bind.target} is missing from the sandbox filesystem policy`);
+    }
+    if (bind.read_only === writable) {
+      throw specInvalid(
+        `bind target ${bind.target} is ${bind.read_only ? 'read-only' : 'writable'} in the Docker config but ` +
+          `${writable ? 'read_write' : 'read_only'} in the sandbox policy`,
+      );
+    }
+  }
 }
 
 // ---------- YAML emission ----------
