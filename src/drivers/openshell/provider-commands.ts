@@ -104,6 +104,28 @@ export function providerGetArgs(name: string): string[] {
   return ['provider', 'get', assertProviderName(name)];
 }
 
+/** OpenShell's own wait for a live attach/detach, kept under the 30 s CLI timeout so its error is the one reported. */
+export const SANDBOX_PROVIDER_WAIT_S = 25;
+
+/**
+ * `openshell sandbox provider attach|detach <sandbox> <provider> --wait`: change
+ * a RUNNING sandbox's providers. `--wait` returns once the sandbox has applied
+ * the provider's credentials, policy and environment for new processes, so
+ * success means it took effect, not just that it was saved.
+ */
+export function sandboxProviderArgs(verb: 'attach' | 'detach', sandbox: string, name: string): string[] {
+  return [
+    'sandbox',
+    'provider',
+    verb,
+    sandbox,
+    assertProviderName(name),
+    '--wait',
+    '--timeout',
+    String(SANDBOX_PROVIDER_WAIT_S),
+  ];
+}
+
 /** One group network rule from CLI input, in the EgressRule shape compilePolicy() consumes. */
 export function groupEgressRule(input: {
   name: unknown;

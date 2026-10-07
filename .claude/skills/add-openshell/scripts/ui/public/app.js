@@ -224,6 +224,7 @@ loaders.providers = async () => {
                       `/api/groups/providers?group=${encodeURIComponent(group())}&name=${encodeURIComponent(p.name)}`,
                     );
                     if (r.status !== 200) alert(r.data.error || 'Failed');
+                    else liveOutcome($('prov-result'), r.data);
                     await loaders.providers();
                   }),
               },
@@ -252,7 +253,7 @@ $('prov-attach').addEventListener('click', (e) =>
     for (const input of $('prov-creds').querySelectorAll('input[type=password]')) input.value = '';
     const out = $('prov-result');
     if (status !== 200) return fail(out, data);
-    out.replaceChildren(el('p', { class: 'ok' }, data.message || 'Attached.'));
+    liveOutcome(out, data);
     await loaders.providers();
   }),
 );

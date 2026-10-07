@@ -15,10 +15,9 @@
  *      container_status running/idle, as getRunningSessions defines it): the
  *      same `openshell policy update` add-rule runs — `--add-endpoint host:port
  *      --binary … --rule-name <name>` per port, or `--remove-rule <name>`.
- * Live apply is best-effort and reported per sandbox: one sandbox failing
- * neither stops the others nor undoes the durable write, and there is no
- * cross-sandbox rollback (as add-rule documents for one sandbox). Calls are
- * sequential, each with add-rule's 30 s CLI timeout.
+ * Live apply is best-effort and reported per sandbox (openshell-live.ts): one
+ * sandbox failing neither stops the others nor undoes the durable write, and
+ * there is no cross-sandbox rollback (as add-rule documents for one sandbox).
  */
 import {
   listGroupEgressRules,
@@ -26,20 +25,19 @@ import {
   removeGroupEgressRule,
   type GroupEgressRule,
 } from '../../db/openshell-group-resources.js';
-import { INSTALL_SLUG } from '../../config.js';
-import { getSessionsByAgentGroup } from '../../db/sessions.js';
 import { openShellSettingsEnv } from '../../drivers/openshell/config.js';
 import type { EgressRule } from '../../drivers/openshell/policy.js';
 import { policyUpdateArgs, type PolicyUpdateOptions } from '../../drivers/openshell/policy-commands.js';
 import { egressRuleUpdateOptions } from '../../drivers/openshell/preset-registry.js';
 import { groupEgressRule } from '../../drivers/openshell/provider-commands.js';
-import { sandboxName } from '../../drivers/openshell/realize.js';
 import { settingsFromEnv } from '../../drivers/openshell/settings.js';
 import { registerResource, type ColumnDef } from '../crud.js';
 import type { CallerContext } from '../frame.js';
 import { logChange } from './openshell-change-log.js';
 import { resolveAgentGroup } from './openshell-group.js';
-import { openShellCommandCli } from './openshell-policy.js';
+import { applyLive, liveSummary, type LiveStep } from './openshell-live.js';
+
+export { liveSummary, type LiveResult } from './openshell-live.js';
 
 const GROUP_ARG: ColumnDef = {
   name: 'group',
@@ -64,23 +62,6 @@ export function setOpenShellNetworkFileRules(fn: ((folder: string) => string[]) 
   fileRuleNames = fn ?? configuredFileRuleNames;
 }
 
-/** add-rule's per-call CLI timeout (openshell-policy.ts runCli default). */
-const LIVE_TIMEOUT_MS = 30_000;
-
-export interface LiveResult {
-  sandbox: string;
-  ok: boolean;
-  error?: string;
-}
-
-/** The group's running sandboxes: sessions whose container is running or idle (getRunningSessions' definition). */
-async function runningSandboxes(agentGroupId: string): Promise<string[]> {
-  const sessions = await getSessionsByAgentGroup(agentGroupId);
-  return sessions
-    .filter((s) => s.container_status === 'running' || s.container_status === 'idle')
-    .map((s) => sandboxName({ installSlug: INSTALL_SLUG, agentGroupId, sessionId: s.id }));
-}
-
 function logRule(rule: { name: string } & Partial<EgressRule>) {
   return {
     name: rule.name,
@@ -90,52 +71,9 @@ function logRule(rule: { name: string } & Partial<EgressRule>) {
   };
 }
 
-/**
- * Fan one group change out to each running sandbox: that sandbox's
- * `openshell policy update` calls in turn; its first failing call is its
- * error. Never throws — a failure is a result, not an abort. Each call is
- * logged with its sandbox, so the group's audit log shows where it landed.
- */
-async function applyLive(
-  group: { id: string; folder: string },
-  verb: 'network-add' | 'network-remove',
-  rule: { name: string } & Partial<EgressRule>,
-  calls: PolicyUpdateOptions[],
-  caller: string,
-): Promise<LiveResult[]> {
-  const sandboxes = await runningSandboxes(group.id);
-  if (sandboxes.length === 0) return [];
-  const cli = openShellCommandCli();
-  const results: LiveResult[] = [];
-  for (const sandbox of sandboxes) {
-    let error: string | undefined;
-    for (const options of calls) {
-      let command: string[] = [];
-      try {
-        command = policyUpdateArgs(sandbox, options);
-        await cli.run(command, { timeoutMs: LIVE_TIMEOUT_MS });
-        logChange({ verb, caller, group, sandbox, command, rule: logRule(rule), ok: true });
-      } catch (err) {
-        error = err instanceof Error ? err.message : String(err);
-        logChange({ verb, caller, group, sandbox, command, rule: logRule(rule), ok: false, error });
-        break;
-      }
-    }
-    results.push(error === undefined ? { sandbox, ok: true } : { sandbox, ok: false, error });
-  }
-  return results;
-}
-
-/** "Applied live to a, b. Failed on c: why." — or that nothing was running. */
-export function liveSummary(live: readonly LiveResult[]): string {
-  if (live.length === 0) return 'No running sandbox to apply it to now.';
-  const ok = live.filter((r) => r.ok).map((r) => r.sandbox);
-  return [
-    ok.length ? `Applied live to ${ok.join(', ')}.` : '',
-    ...live.filter((r) => !r.ok).map((r) => `Failed on ${r.sandbox}: ${r.error}.`),
-  ]
-    .filter(Boolean)
-    .join(' ');
+/** Each running sandbox gets these `openshell policy update` calls, in order. */
+function policySteps(calls: PolicyUpdateOptions[]): LiveStep[] {
+  return calls.map((options) => (sandbox: string) => policyUpdateArgs(sandbox, options));
 }
 
 function render(data: unknown): string {
@@ -199,7 +137,13 @@ registerResource({
         const ref = { id: group.id, folder: group.folder };
         logChange({ verb: 'network-add', caller: ctx.caller, group: ref, rule: logRule(rule), ok: true });
         // After the durable write, never instead of it: live apply cannot fail the command.
-        const live = await applyLive(ref, 'network-add', rule, egressRuleUpdateOptions(rule), ctx.caller);
+        const live = await applyLive(
+          ref,
+          'network-add',
+          policySteps(egressRuleUpdateOptions(rule)),
+          { rule: logRule(rule) },
+          ctx.caller,
+        );
         return {
           group: { id: group.id, folder: group.folder, name: group.name },
           rule,
@@ -228,7 +172,13 @@ registerResource({
           throw new Error(`no network path '${name}' for ${group.folder}`);
         const ref = { id: group.id, folder: group.folder };
         logChange({ verb: 'network-remove', caller: ctx.caller, group: ref, rule: { name }, ok: true });
-        const live = await applyLive(ref, 'network-remove', { name }, [{ removeRule: [name] }], ctx.caller);
+        const live = await applyLive(
+          ref,
+          'network-remove',
+          policySteps([{ removeRule: [name] }]),
+          { rule: { name } },
+          ctx.caller,
+        );
         return {
           group: { id: group.id, folder: group.folder, name: group.name },
           saved: true,

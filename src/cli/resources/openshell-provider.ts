@@ -16,8 +16,12 @@
  * exist in the gateway (`openshell provider get` is checked first).
  *
  * hostOnly: which credentials a sandbox gets is the operator's decision.
- * Changes apply to sandboxes created afterwards; a running sandbox keeps what
- * it started with (`openshell sandbox provider attach` changes a live one).
+ * attach / detach do two things, in this order:
+ *   1. the durable write (openshell_group_providers) — every sandbox the group
+ *      gets from now on has the provider (or not);
+ *   2. live apply to every sandbox the group has running NOW:
+ *      `openshell sandbox provider attach|detach <sandbox> <name> --wait`.
+ * Live apply is best-effort and reported per sandbox (openshell-live.ts).
  */
 import {
   attachGroupProvider,
@@ -30,12 +34,14 @@ import {
   assertProviderType,
   providerCreateInvocation,
   providerGetArgs,
+  sandboxProviderArgs,
   stringMap,
 } from '../../drivers/openshell/provider-commands.js';
 import { registerResource, type ColumnDef } from '../crud.js';
 import type { CallerContext } from '../frame.js';
 import { logChange } from './openshell-change-log.js';
 import { resolveAgentGroup } from './openshell-group.js';
+import { applyLive, liveSummary } from './openshell-live.js';
 import { openShellCommandCli } from './openshell-policy.js';
 
 const GROUP_ARG: ColumnDef = {
@@ -77,7 +83,8 @@ registerResource({
   table: '',
   idColumn: 'group',
   description:
-    'OpenShell gateway providers attached to an agent group; every new sandbox of the group gets them. ' +
+    'OpenShell gateway providers attached to an agent group; every new sandbox of the group gets them, and ' +
+    'attach / detach also change the group’s running ones. ' +
     'Not the AI model provider (`groups config --provider`). Operator-only.',
   columns: [GROUP_ARG],
   operations: {},
@@ -86,7 +93,10 @@ registerResource({
       access: 'approval',
       hostOnly: true,
       description:
-        "Attach an OpenShell provider to a group's sandboxes (from the next sandbox on).\n" +
+        "Attach an OpenShell provider to a group's sandboxes: saved for every sandbox the group gets from now on, " +
+        'AND attached live to every sandbox the group has running now (`openshell sandbox provider attach --wait` per ' +
+        'running sandbox) — approving this can change several live sandboxes at once. Live attach is best-effort: ' +
+        'each sandbox is reported applied or failed, and a failure never undoes the saved attachment.\n' +
         'With --type, first create it in the OpenShell gateway with --credentials (JSON object KEY → value; ' +
         'prefer --stdin-json). Values go only to the gateway; NanoClaw keeps key names and a hash.',
       args: [
@@ -149,11 +159,23 @@ registerResource({
         }
         const row = await attachGroupProvider({ agentGroupId: group.id, name, type, credentials });
         logChange({ ...base, command, provider: providerInfo, ok: true });
+        // After the durable write, never instead of it: live apply cannot fail the command.
+        const live = await applyLive(
+          base.group,
+          'provider-attach',
+          [(sandbox) => sandboxProviderArgs('attach', sandbox, name)],
+          { provider: providerInfo },
+          ctx.caller,
+        );
         return {
           group: { id: group.id, folder: group.folder, name: group.name },
           created: Boolean(type),
           provider: { name: row.name, type: row.type, credentialKeys: row.credentialKeys, attachedAt: row.attachedAt },
-          message: `${type ? `Created OpenShell provider ${name} (${type}) and attached` : `Attached OpenShell provider ${name}`} to ${group.folder}; its next sandbox gets it.`,
+          saved: true,
+          live,
+          message:
+            `${type ? `Created OpenShell provider ${name} (${type}) and attached` : `Attached OpenShell provider ${name}`} ` +
+            `to ${group.folder} for future sandboxes. ${liveSummary(live)}`,
         };
       },
       formatHuman: render,
@@ -162,7 +184,9 @@ registerResource({
       access: 'approval',
       hostOnly: true,
       description:
-        'Detach an OpenShell provider from a group (from the next sandbox on). The provider stays in the gateway.',
+        'Detach an OpenShell provider from a group: from every sandbox the group gets from now on, AND live from ' +
+        'every sandbox the group has running now (`openshell sandbox provider detach --wait` per running sandbox) — ' +
+        'approving this can change several live sandboxes at once. The provider stays in the gateway.',
       args: [GROUP_ARG, PROVIDER_ARG],
       examples: ['ncl openshell-provider detach --group alice --openshell-provider github-alice'],
       handler: async (args, ctx: CallerContext) => {
@@ -170,16 +194,20 @@ registerResource({
         const name = assertProviderName(args.openshell_provider);
         const removed = await detachGroupProvider(group.id, name);
         if (!removed) throw new Error(`OpenShell provider '${name}' is not attached to ${group.folder}`);
-        logChange({
-          verb: 'provider-detach',
-          caller: ctx.caller,
-          group: { id: group.id, folder: group.folder },
-          provider: { name },
-          ok: true,
-        });
+        const ref = { id: group.id, folder: group.folder };
+        logChange({ verb: 'provider-detach', caller: ctx.caller, group: ref, provider: { name }, ok: true });
+        const live = await applyLive(
+          ref,
+          'provider-detach',
+          [(sandbox) => sandboxProviderArgs('detach', sandbox, name)],
+          { provider: { name } },
+          ctx.caller,
+        );
         return {
           group: { id: group.id, folder: group.folder, name: group.name },
-          message: `Detached OpenShell provider ${name} from ${group.folder}; its next sandbox will not get it.`,
+          saved: true,
+          live,
+          message: `Detached OpenShell provider ${name} from ${group.folder} for future sandboxes. ${liveSummary(live)}`,
         };
       },
       formatHuman: render,
