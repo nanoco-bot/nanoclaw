@@ -60,6 +60,7 @@ import { initGroupFilesystem } from './group-init.js';
 import { getAgentMailbox } from './mailbox/index.js';
 import { stopTypingRefresh } from './modules/typing/index.js';
 import { log } from './log.js';
+import { clearSpawnFailure, recordSpawnFailure } from './spawn-failure-notice.js';
 import { validateAdditionalMounts } from './modules/mount-security/index.js';
 // Provider contracts use a separate barrel so update-skills identity detection
 // remains tied to src/providers/index.ts.
@@ -337,9 +338,13 @@ export function wakeContainer(session: Session): Promise<boolean> {
     return existing;
   }
   const promise = spawnContainer(session)
-    .then(() => true)
+    .then(() => {
+      clearSpawnFailure(session.id);
+      return true;
+    })
     .catch((err) => {
       log.warn('wakeContainer failed — host-sweep will retry', { sessionId: session.id, err });
+      recordSpawnFailure(session.id, err);
       return false;
     })
     .finally(() => {
@@ -578,7 +583,10 @@ export function watchGatewayAvailability(
 
 async function ensureGatewaySession(input: GatewaySessionInput): Promise<GatewaySessionControl> {
   if (gatewayUnavailableReason) {
-    throw new Error(`Gateway session admission is closed: ${gatewayUnavailableReason}`);
+    throw Object.assign(new Error(`Gateway session admission is closed: ${gatewayUnavailableReason}`), {
+      userMessage:
+        "I can't start right now: this NanoClaw install's credential gateway is unavailable. The operator has the details in the host logs.",
+    });
   }
   const controller = new AbortController();
   const generation = gatewayAdmissionGeneration;

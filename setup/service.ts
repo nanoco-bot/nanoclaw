@@ -14,6 +14,7 @@ import { readEnvFile } from '../src/env.js';
 import { log } from '../src/log.js';
 import { getLaunchdLabel, getSystemdUnit } from '../src/install-slug.js';
 import { writeUpgradeState } from '../src/upgrade-state.js';
+import { RELAY_CREDENTIAL_KEYS, readPlistEnvironment } from './lib/launchd-plist.js';
 import { cleanupUnhealthyPeers } from './peer-cleanup.js';
 import { commandExists, getPlatform, getNodePath, getServiceManager, isRoot } from './platform.js';
 import { emitStatus } from './status.js';
@@ -281,6 +282,65 @@ function installCliSymlink(projectRoot: string, homeDir: string): void {
   }
 }
 
+/** Credential entries already in an existing plist, to survive its regeneration. */
+export function carriedRelayCredential(plistPath: string): [string, string][] {
+  let text: string;
+  try {
+    text = fs.readFileSync(plistPath, 'utf-8');
+  } catch {
+    return [];
+  }
+  const env = readPlistEnvironment(text);
+  return RELAY_CREDENTIAL_KEYS.flatMap((key) => {
+    const value = env?.get(key);
+    return value ? [[key, value] as [string, string]] : [];
+  });
+}
+
+type ShellRun = (command: string) => void;
+const runIgnoringOutput: ShellRun = (command) => {
+  execSync(command, { stdio: 'ignore' });
+};
+
+/**
+ * (Re)load a LaunchAgent so launchd runs the plist now on disk. Shared by
+ * setupLaunchd and the OpenShell credential write
+ * (setup/lib/openshell-credential.ts), which edits this plist's environment.
+ */
+export function reloadLaunchAgent(plistPath: string, label: string, run: ShellRun = runIgnoringOutput): void {
+  // Unload first to force launchd to drop any cached plist and re-read from
+  // disk. Bare `launchctl load` on an already-loaded plist errors with
+  // "already loaded" and keeps the ORIGINAL plist's ProgramArguments /
+  // WorkingDirectory in memory — even if the file on disk changed. That
+  // bit us when the plist target shifted between installs: kickstart kept
+  // relaunching the old binary and the CLI socket landed in the wrong dir.
+  // unload succeeds whether or not the service was previously loaded; the
+  // failure case is "Could not find specified service" which is harmless.
+  try {
+    run(`launchctl unload ${JSON.stringify(plistPath)}`);
+    log.info('launchctl unload succeeded');
+  } catch {
+    log.info('launchctl unload noop (plist was not previously loaded)');
+  }
+
+  try {
+    run(`launchctl load ${JSON.stringify(plistPath)}`);
+    log.info('launchctl load succeeded');
+  } catch (err) {
+    log.error('launchctl load failed', { err });
+  }
+
+  // launchd can leave a freshly loaded RunAtLoad job queued without ever
+  // spawning it (`launchctl print` shows "pended nondemand spawn =
+  // speculative", runs = 0, indefinitely — seen live 2026-08-10). kickstart
+  // demand-starts it, and is a no-op on a job that load already spawned.
+  try {
+    run(`launchctl kickstart gui/${process.getuid!()}/${label}`);
+  } catch (err) {
+    log.error('launchctl kickstart failed', { err });
+  }
+}
+
 function setupLaunchd(projectRoot: string, nodePath: string, homeDir: string): void {
   // Per-checkout service label so multiple NanoClaw installs can coexist
   // without clobbering each other's plist.
@@ -288,7 +348,12 @@ function setupLaunchd(projectRoot: string, nodePath: string, homeDir: string): v
   const plistPath = path.join(homeDir, 'Library', 'LaunchAgents', `${label}.plist`);
   fs.mkdirSync(path.dirname(plistPath), { recursive: true });
 
-  const proxyEntries = hostProxyEnvEntries(projectRoot)
+  // The OpenShell model-relay credential lives in this plist's environment
+  // on macOS (setup/lib/openshell-credential.ts writes it there). The plist is
+  // regenerated below, so carry it over; otherwise re-running this step would
+  // silently strip the relay's credential.
+  const carried = carriedRelayCredential(plistPath);
+  const proxyEntries = [...hostProxyEnvEntries(projectRoot), ...carried]
     .map(([key, value]) => `\n        <key>${key}</key>\n        <string>${xmlEscape(value)}</string>`)
     .join('');
 
@@ -327,41 +392,7 @@ function setupLaunchd(projectRoot: string, nodePath: string, homeDir: string): v
   writeOwnerOnly(plistPath, plist);
   log.info('Wrote launchd plist', { plistPath });
 
-  // Unload first to force launchd to drop any cached plist and re-read from
-  // disk. Bare `launchctl load` on an already-loaded plist errors with
-  // "already loaded" and keeps the ORIGINAL plist's ProgramArguments /
-  // WorkingDirectory in memory — even if the file on disk changed. That
-  // bit us when the plist target shifted between installs: kickstart kept
-  // relaunching the old binary and the CLI socket landed in the wrong dir.
-  // unload succeeds whether or not the service was previously loaded; the
-  // failure case is "Could not find specified service" which is harmless.
-  try {
-    execSync(`launchctl unload ${JSON.stringify(plistPath)}`, {
-      stdio: 'ignore',
-    });
-    log.info('launchctl unload succeeded');
-  } catch {
-    log.info('launchctl unload noop (plist was not previously loaded)');
-  }
-
-  try {
-    execSync(`launchctl load ${JSON.stringify(plistPath)}`, {
-      stdio: 'ignore',
-    });
-    log.info('launchctl load succeeded');
-  } catch (err) {
-    log.error('launchctl load failed', { err });
-  }
-
-  // launchd can leave a freshly loaded RunAtLoad job queued without ever
-  // spawning it (`launchctl print` shows "pended nondemand spawn =
-  // speculative", runs = 0, indefinitely — seen live 2026-08-10). kickstart
-  // demand-starts it, and is a no-op on a job that load already spawned.
-  try {
-    execSync(`launchctl kickstart gui/${process.getuid!()}/${label}`, { stdio: 'ignore' });
-  } catch (err) {
-    log.error('launchctl kickstart failed', { err });
-  }
+  reloadLaunchAgent(plistPath, label);
 
   // Verify
   let serviceLoaded = false;

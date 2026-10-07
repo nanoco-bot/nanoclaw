@@ -33,6 +33,7 @@ import { startTypingRefresh, stopTypingRefresh } from './modules/typing/index.js
 import { log } from './log.js';
 import { resolveSession, writeSessionMessage, writeOutboundDirect } from './session-manager.js';
 import { requestWake } from './request-wake.js';
+import { takeSpawnFailureNotice } from './spawn-failure-notice.js';
 import { getSession } from './db/sessions.js';
 import type { AgentGroup, MessagingGroup, MessagingGroupAgent, Session } from './types.js';
 import type { InboundEvent } from './channels/adapter.js';
@@ -646,7 +647,22 @@ async function deliverToAgent(
       // requestWake never throws — it returns false on transient spawn
       // failure (host-sweep retries). Stop the typing indicator we just
       // started so it doesn't leak; the inbound row stays pending.
-      if (!woke) stopTypingRefresh(freshSession.id);
+      if (!woke) {
+        stopTypingRefresh(freshSession.id);
+        // A failure marked user-facing (e.g. the gateway has no model
+        // credential) is said in the chat instead of leaving silence.
+        const notice = takeSpawnFailureNotice(freshSession.id);
+        if (notice) {
+          await writeOutboundDirect(freshSession.agent_group_id, freshSession.id, {
+            id: `spawn-failure-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+            kind: 'chat',
+            platformId: deliveryAddr.platformId,
+            channelType: deliveryAddr.channelType,
+            threadId: deliveryAddr.threadId,
+            content: JSON.stringify({ text: notice }),
+          }).catch((err) => log.warn('Could not post spawn-failure notice', { sessionId: freshSession.id, err }));
+        }
+      }
     }
 
     // Cross-session context: fan the triggering message into the

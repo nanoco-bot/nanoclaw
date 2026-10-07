@@ -14,10 +14,22 @@
  *                          "Terminal Agent".
  *   NANOCLAW_AGENT_PROVIDER preselect the setup provider and skip the picker
  *                          (for packaged flows). Example: claude.
+ *   NANOCLAW_OPENSHELL     true/false: answer "Enable OpenShell sandboxing?"
+ *                          without asking (with OPENSHELL_BIN / OPENSHELL_GATEWAY).
+ *                          Unset and no TTY means no — Docker, nothing written.
+ *                          Once enabled, setup installs OpenShell itself
+ *                          (openshell-install, after the container step) and
+ *                          starts the OpenShell setup web UI at the end, without
+ *                          asking (NANOCLAW_OPENSHELL_UI_PORT picks its port).
+ *                          false on an OpenShell copy switches it back to Docker.
  *   NANOCLAW_SKIP          comma-separated step names to skip
- *                          (environment|container|gateway|auth|mounts|
- *                           service|cli-agent|timezone|channel|
- *                           verify|first-chat)
+ *                          (environment|openshell|openshell-install|openshell-ui|
+ *                           container|gateway|auth|mounts|service|cli-agent|
+ *                           timezone|channel|verify|first-chat).
+ *                          `openshell` skips the question and keeps whatever
+ *                          `.env` already says — a copy without OpenShell runs
+ *                          none of its steps; `fail()`'s retry skips it this way
+ *                          once it has completed.
  *
  * Timezone is auto-detected after the CLI agent step. UTC resolves are
  * confirmed with the user, and free-text replies fall through to a
@@ -60,6 +72,8 @@ import { brightSelect } from './lib/bright-select.js';
 import { buildContainerImage } from './lib/container-build.js';
 import { offerClaudeOnFailure } from './lib/claude-handoff.js';
 import { setPickedProvider } from './lib/picked-provider.js';
+import { authRunsAfterService } from './lib/step-order.js';
+import { getPlatform } from './platform.js';
 import {
   AGENT_IMAGE_PIN,
   AGENT_IMAGE_REF_ENV_KEY,
@@ -79,6 +93,9 @@ import { runUninstallFlow } from './uninstall/flow.js';
 import { detectExistingInstall } from './uninstall/scan.js';
 import { detectRegisteredGroups, detectExistingDisplayName, readEnvKey } from './environment.js';
 import { installGateway, runGatewayAuth } from './gateways/install.js';
+import { OPENSHELL_DRIVER, OPENSHELL_GATEWAY_KIND, askOpenShell, readOpenShellEnv } from './openshell.js';
+import { hostSupport, unsupportedHostHint } from './openshell-install.js';
+import { gatewayConfigRemedy } from './lib/openshell-runtime.js';
 import { loadGatewayCatalog } from './gateways/catalog.js';
 import { configuredGatewayKind, detectInstalledGateway } from './gateways/selection.js';
 import { getLaunchdLabel, getSystemdUnit } from '../src/install-slug.js';
@@ -261,6 +278,13 @@ async function main(): Promise<void> {
     await runTemplateSetup(savedPickBridged, await detectRegisteredGroups(process.cwd()));
   }
 
+  // OpenShell sandboxing is opt-in. Asked before the image step because it
+  // decides the runtime driver and, with it, the gateway installed below.
+  // Skipped (incl. fail()'s retry after it completed): whatever .env says.
+  const openshellEnabled = skip.has('openshell')
+    ? openShellConfigured()
+    : await runOpenShellChoice({ installSkipped: skip.has('openshell-install') });
+
   if (!skip.has('container')) {
     p.log.message(
       brandBody(dimWrap('Your assistant lives in its own sandbox. It can only see what you explicitly share.', 4)),
@@ -300,6 +324,13 @@ async function main(): Promise<void> {
           'Log out and back in (or run `newgrp docker` in a new shell), then retry.',
         );
       }
+      if (err === 'openshell_image_failed') {
+        await fail(
+          'container',
+          "Couldn't prepare the OpenShell version of the sandbox image.",
+          'See logs/setup-steps/ for the docker output, then retry (`pnpm exec tsx setup/lib/openshell-image.ts`).',
+        );
+      }
       // The pull path fails for reasons a build never has, and "prune the build
       // cache" is useless advice for both of them.
       if (err === 'image_ref_not_configured') {
@@ -325,7 +356,17 @@ async function main(): Promise<void> {
     maybeReexecUnderSg();
   }
 
-  let gatewayKind = process.env.NANOCLAW_GATEWAY_PROVIDER?.trim().toLowerCase();
+  // OpenShell itself: CLI, its local gateway, its supervisor image. After the
+  // container step because OpenShell's gateway runs sandboxes on Docker, which
+  // that step installs; before the gateway step, whose OpenShell skill wants
+  // the CLI in place.
+  if (openshellEnabled && !skip.has('openshell-install')) await runOpenShellInstall();
+
+  // OpenShell copies run the OpenShell gateway: its relay is the only model
+  // route a sandbox's policy allows (runOpenShellChoice refused a conflict).
+  let gatewayKind = openshellEnabled
+    ? OPENSHELL_GATEWAY_KIND
+    : process.env.NANOCLAW_GATEWAY_PROVIDER?.trim().toLowerCase();
   if (!skip.has('gateway')) {
     p.log.message(
       brandBody(
@@ -349,114 +390,124 @@ async function main(): Promise<void> {
   }
 
   let agentProvider: string | undefined;
-  if (!skip.has('auth')) {
-    // Agent runtime pick. Claude is the default and a no-op — choosing it
-    // runs the existing Claude auth flow unchanged. A branch provider walks
-    // its own auth (e.g. Codex: ChatGPT subscription or API key, vault-only)
-    // and verifies its payload is wired. The pick installs and authenticates
-    // the runtime; it is NOT an install-wide default — and it is NOT a
-    // creation flag. Provider is a DB property of a group: the creation flows
-    // create provider-agnostic groups, and setup sets the picked provider on
-    // each via `ncl groups config update --provider` right after creating it
-    // (the creation scripts inherit it and apply at create — see picked-provider). Existing groups switch the
-    // same way (docs/provider-migration.md).
-    agentProvider = await askAgentProviderChoice();
-    setPickedProvider(agentProvider);
+  // Agent auth normally runs here, before mounts/service; on macOS with
+  // OpenShell it runs right after the service step instead (the credential
+  // goes into the LaunchAgent plist that step writes). See setup/lib/step-order.ts.
+  const authAfterService = authRunsAfterService({ openshellEnabled, platform: getPlatform() });
+  async function runAuthStep(): Promise<void> {
+    if (!skip.has('auth')) {
+      // Agent runtime pick. Claude is the default and a no-op — choosing it
+      // runs the existing Claude auth flow unchanged. A branch provider walks
+      // its own auth (e.g. Codex: ChatGPT subscription or API key, vault-only)
+      // and verifies its payload is wired. The pick installs and authenticates
+      // the runtime; it is NOT an install-wide default — and it is NOT a
+      // creation flag. Provider is a DB property of a group: the creation flows
+      // create provider-agnostic groups, and setup sets the picked provider on
+      // each via `ncl groups config update --provider` right after creating it
+      // (the creation scripts inherit it and apply at create — see picked-provider). Existing groups switch the
+      // same way (docs/provider-migration.md).
+      // OpenShell's gateway relays Claude credentials only, so there is no
+      // runtime to choose: skip the picker (Claude's auth below then runs the
+      // OpenShell gateway's own sign-in via runGatewayAuth).
+      agentProvider = openshellEnabled ? await openShellAgentProvider() : await askAgentProviderChoice();
+      setPickedProvider(agentProvider);
 
-    // A pulled image bakes /app/node_modules and the CLI manifest, and every
-    // non-claude runtime changes one of them — so it needs an image this
-    // machine builds. Settle it here: buildContainerImage() below refuses on a
-    // pinned install, and reaching that refusal aborts setup with no way out
-    // short of re-running it.
-    const providerDescriptor = getInstallableProviderDescriptor(agentProvider);
-    if (providerImagePolicy(agentProvider) === 'local-required' && readImageSource() === 'hardened') {
-      const leave = ensureAnswer(
-        await p.confirm({
-          message: `${agentProvider} needs a sandbox image built on this machine. Stop using the pre-built one?`,
-          initialValue: true,
-        }),
-      );
-      if (!leave) {
-        await fail(
-          'auth',
-          `${agentProvider} can't run on the pre-built sandbox image.`,
-          'Re-run setup and choose Claude to keep the pre-built image.',
+      // A pulled image bakes /app/node_modules and the CLI manifest, and every
+      // non-claude runtime changes one of them — so it needs an image this
+      // machine builds. Settle it here: buildContainerImage() below refuses on a
+      // pinned install, and reaching that refusal aborts setup with no way out
+      // short of re-running it.
+      const providerDescriptor = getInstallableProviderDescriptor(agentProvider);
+      if (providerImagePolicy(agentProvider) === 'local-required' && readImageSource() === 'hardened') {
+        const leave = ensureAnswer(
+          await p.confirm({
+            message: `${agentProvider} needs a sandbox image built on this machine. Stop using the pre-built one?`,
+            initialValue: true,
+          }),
         );
+        if (!leave) {
+          await fail(
+            'auth',
+            `${agentProvider} can't run on the pre-built sandbox image.`,
+            'Re-run setup and choose Claude to keep the pre-built image.',
+          );
+        }
+        writeImageSource('local');
+        setupLog.userInput('image_source', 'local');
+        p.log.info(brandBody('Switched back to a locally built sandbox image.'));
       }
-      writeImageSource('local');
-      setupLog.userInput('image_source', 'local');
-      p.log.info(brandBody('Switched back to a locally built sandbox image.'));
-    }
 
-    let providerEntry = getSetupProvider(agentProvider);
-    if (!providerEntry) {
-      // A non-claude provider picked from the hard-wired list isn't wired in
-      // this install yet — install it by applying its `/add-<name>` SKILL.md
-      // in-process via the directive engine (channel style, idempotent:
-      // self-skips if already installed), rebuild the image (the container step
-      // already ran, the CLI manifest just changed), then load the payload's
-      // setup module so it self-registers.
-      if (!providerDescriptor) throw new Error(`No install descriptor for provider '${agentProvider}'`);
-      const skillDir = providerDescriptor.skillDir;
-      const s = p.spinner();
-      s.start(`Installing ${agentProvider}…`);
-      let blockers: string[];
-      let hostContractModules: string[];
-      try {
-        ({ blockers, hostContractModules } = await applyProviderSkill(skillDir, process.cwd()));
-      } catch (err) {
-        s.stop(`Couldn't install ${agentProvider}.`, 1);
-        const message = err instanceof Error ? err.message : String(err);
-        await fail(`add-${agentProvider}`, `Couldn't install ${agentProvider}.`, message);
-        return; // unreachable — fail() exits — but narrows blockers for TS
+      let providerEntry = getSetupProvider(agentProvider);
+      if (!providerEntry) {
+        // A non-claude provider picked from the hard-wired list isn't wired in
+        // this install yet — install it by applying its `/add-<name>` SKILL.md
+        // in-process via the directive engine (channel style, idempotent:
+        // self-skips if already installed), rebuild the image (the container step
+        // already ran, the CLI manifest just changed), then load the payload's
+        // setup module so it self-registers.
+        if (!providerDescriptor) throw new Error(`No install descriptor for provider '${agentProvider}'`);
+        const skillDir = providerDescriptor.skillDir;
+        const s = p.spinner();
+        s.start(`Installing ${agentProvider}…`);
+        let blockers: string[];
+        let hostContractModules: string[];
+        try {
+          ({ blockers, hostContractModules } = await applyProviderSkill(skillDir, process.cwd()));
+        } catch (err) {
+          s.stop(`Couldn't install ${agentProvider}.`, 1);
+          const message = err instanceof Error ? err.message : String(err);
+          await fail(`add-${agentProvider}`, `Couldn't install ${agentProvider}.`, message);
+          return; // unreachable — fail() exits — but narrows blockers for TS
+        }
+        if (blockers.length) {
+          s.stop(`Couldn't install ${agentProvider}.`, 1);
+          await fail(`add-${agentProvider}`, `Couldn't install ${agentProvider}.`, blockers.join('; '));
+        }
+        s.stop(`${agentProvider} installed.`);
+        p.log.info(brandBody('Rebuilding the container image with the new provider…'));
+        // The rebuild is not optional here: the provider's CLI manifest is baked
+        // into the image, so continuing past a failed build would authenticate a
+        // runtime the container cannot actually start.
+        const rebuild = buildContainerImage();
+        if (!rebuild.ok) {
+          await fail(
+            `add-${agentProvider}`,
+            `Couldn't rebuild the container image for ${agentProvider}. ${rebuild.message}`,
+            rebuild.hint,
+          );
+        }
+        // This process imported src/provider-contracts/index.ts at startup, and
+        // ESM caches the barrel, so a line appended to it now never evaluates
+        // here; load the contract module directly before the auth step asks the
+        // gateway store for model endpoints.
+        await loadHostContractModules(hostContractModules);
+        await import(`./providers/${agentProvider}.js`);
+        providerEntry = getSetupProvider(agentProvider);
       }
-      if (blockers.length) {
-        s.stop(`Couldn't install ${agentProvider}.`, 1);
-        await fail(`add-${agentProvider}`, `Couldn't install ${agentProvider}.`, blockers.join('; '));
+      if (providerEntry?.runAuth) {
+        try {
+          await providerEntry.runAuth();
+          await providerEntry.runInstallCheck?.();
+        } catch (err) {
+          await fail(
+            'auth',
+            `Couldn't authenticate or verify ${agentProvider}.`,
+            err instanceof Error ? err.message : String(err),
+          );
+        }
+      } else {
+        if (!gatewayKind) throw new Error('No gateway is selected for agent authentication');
+        runGatewayAuth(gatewayKind, agentProvider);
       }
-      s.stop(`${agentProvider} installed.`);
-      p.log.info(brandBody('Rebuilding the container image with the new provider…'));
-      // The rebuild is not optional here: the provider's CLI manifest is baked
-      // into the image, so continuing past a failed build would authenticate a
-      // runtime the container cannot actually start.
-      const rebuild = buildContainerImage();
-      if (!rebuild.ok) {
-        await fail(
-          `add-${agentProvider}`,
-          `Couldn't rebuild the container image for ${agentProvider}. ${rebuild.message}`,
-          rebuild.hint,
-        );
-      }
-      // This process imported src/provider-contracts/index.ts at startup, and
-      // ESM caches the barrel, so a line appended to it now never evaluates
-      // here; load the contract module directly before the auth step asks the
-      // gateway store for model endpoints.
-      await loadHostContractModules(hostContractModules);
-      await import(`./providers/${agentProvider}.js`);
-      providerEntry = getSetupProvider(agentProvider);
+      // Persist the pick as the instance-wide default so every future group
+      // (channel-approved, ncl-created) is created on this provider. Read from
+      // .env at host start; per-group `ncl groups config update --provider` wins.
+      // Only after install + auth succeeded — a failed setup must not leave new
+      // groups defaulting to an unauthenticated runtime.
+      upsertEnvVar('DEFAULT_AGENT_PROVIDER', agentProvider);
     }
-    if (providerEntry?.runAuth) {
-      try {
-        await providerEntry.runAuth();
-        await providerEntry.runInstallCheck?.();
-      } catch (err) {
-        await fail(
-          'auth',
-          `Couldn't authenticate or verify ${agentProvider}.`,
-          err instanceof Error ? err.message : String(err),
-        );
-      }
-    } else {
-      if (!gatewayKind) throw new Error('No gateway is selected for agent authentication');
-      runGatewayAuth(gatewayKind, agentProvider);
-    }
-    // Persist the pick as the instance-wide default so every future group
-    // (channel-approved, ncl-created) is created on this provider. Read from
-    // .env at host start; per-group `ncl groups config update --provider` wins.
-    // Only after install + auth succeeded — a failed setup must not leave new
-    // groups defaulting to an unauthenticated runtime.
-    upsertEnvVar('DEFAULT_AGENT_PROVIDER', agentProvider);
   }
+  if (!authAfterService) await runAuthStep();
 
   if (!skip.has('mounts')) {
     const res = await runQuietStep(
@@ -537,6 +588,8 @@ async function main(): Promise<void> {
       );
     }
   }
+
+  if (authAfterService) await runAuthStep();
 
   let displayName: string | undefined;
   async function resolveDisplayName(): Promise<string> {
@@ -731,16 +784,37 @@ async function main(): Promise<void> {
   // Keep the chosen agent through the later Slack offer as well. A later run
   // derives connect choices from current wirings instead of inheriting this id.
   delete process.env.NANOCLAW_TEMPLATE_AGENT_ID;
-  if (!skip.has('verify')) {
-    const res = await runQuietStep('verify', {
-      running: 'Making sure everything works together…',
-      done: 'NanoClaw is running.',
-      failed: 'A few things still need your attention.',
-    });
+  const verifyRes = skip.has('verify')
+    ? null
+    : await runQuietStep('verify', {
+        running: 'Making sure everything works together…',
+        done: 'NanoClaw is running.',
+        failed: 'A few things still need your attention.',
+      });
+  // The OpenShell setup UI starts last, so its URL is among the final lines,
+  // and whether or not verify passed: replacing the Claude credential is one
+  // of the things it is for.
+  if (openshellEnabled && !skip.has('openshell-ui')) await startOpenShellUi();
+  if (verifyRes) {
+    const res = verifyRes;
     if (!res.ok) {
       const notes: string[] = [];
       if (res.terminal?.fields.CREDENTIALS !== 'configured') {
-        notes.push("• Your Claude account isn't connected. Re-run setup and try again.");
+        notes.push(
+          res.terminal?.fields.CREDENTIAL_SOURCE
+            ? "• The OpenShell model relay has no Claude credential, so agents can't reply. Run `pnpm exec tsx setup/index.ts --step gateway-auth`."
+            : "• Your Claude account isn't connected. Re-run setup and try again.",
+        );
+      }
+      const openshellGateway = res.terminal?.fields.OPENSHELL_GATEWAY;
+      if (openshellGateway && openshellGateway !== 'connected') {
+        notes.push(
+          "• OpenShell's gateway isn't answering, so no sandbox can start. Run `pnpm exec tsx setup/index.ts --step openshell-install` to see why.",
+        );
+      } else if (res.terminal?.fields.OPENSHELL_SUPERVISOR_IMAGE === 'missing') {
+        notes.push(
+          `• OpenShell's supervisor image is missing, so no sandbox can start. Run \`docker pull ${res.terminal.fields.OPENSHELL_SUPERVISOR_IMAGE_REF}\`.`,
+        );
       }
       const service = res.terminal?.fields.SERVICE;
       if (service === 'running_other_checkout') {
@@ -856,6 +930,153 @@ async function main(): Promise<void> {
     p.outro(k.green("You're set."));
   } else {
     p.outro(k.green("You're ready! Chat with `pnpm run chat hi`."));
+  }
+}
+
+// ─── openshell step ─────────────────────────────────────────────────────
+
+/** NANOCLAW_SKIP=openshell: no question, the copy stays as `.env` has it. */
+function openShellConfigured(): boolean {
+  return readOpenShellEnv().NANOCLAW_RUNTIME_DRIVER?.trim().toLowerCase() === OPENSHELL_DRIVER;
+}
+
+/**
+ * "Enable OpenShell sandboxing?" — answered by, in order: NANOCLAW_OPENSHELL
+ * (flag/env), an earlier answer already in `.env`, the operator (TTY only).
+ * No answer means no, and no means nothing is written: Docker stays the
+ * runtime exactly as before this step existed. A machine OpenShell is not
+ * published for (an Intel Mac) is never asked; choosing OpenShell there
+ * anyway (flag or `.env`) stops setup with the reason.
+ */
+async function runOpenShellChoice(opts: { installSkipped: boolean }): Promise<boolean> {
+  const existing = readOpenShellEnv();
+  const alreadyEnabled = existing.NANOCLAW_RUNTIME_DRIVER?.trim().toLowerCase() === OPENSHELL_DRIVER;
+  const flag = process.env.NANOCLAW_OPENSHELL?.trim().toLowerCase();
+  const support = hostSupport();
+  let enable: boolean;
+  let bin = process.env.OPENSHELL_BIN?.trim() || existing.OPENSHELL_BIN;
+  let gateway = process.env.OPENSHELL_GATEWAY?.trim() || existing.OPENSHELL_GATEWAY;
+  if (flag === 'true' || flag === 'false') {
+    enable = flag === 'true';
+  } else if (alreadyEnabled) {
+    enable = true;
+  } else if (process.stdin.isTTY && support.ok) {
+    const answers = await askOpenShell(existing);
+    enable = answers.enable;
+    bin = answers.bin ?? bin;
+    gateway = answers.gateway ?? gateway;
+  } else {
+    // In place of a question whose only working answer is no.
+    if (process.stdin.isTTY && !support.ok) {
+      p.log.info(brandBody(`${support.reason} This install uses Docker sandboxing.`));
+    }
+    enable = false;
+  }
+  setupLog.userInput('openshell', String(enable));
+
+  if (!enable) {
+    if (alreadyEnabled && flag === 'false') {
+      const res = await runQuietStep(
+        'openshell',
+        { running: 'Switching back to Docker sandboxing…', done: 'Docker sandboxing restored.' },
+        ['--disable'],
+      );
+      if (!res.ok) await fail('openshell', "Couldn't switch back to Docker sandboxing.");
+    }
+    return false;
+  }
+
+  if (!support.ok) {
+    await fail(
+      'openshell',
+      "OpenShell sandboxing isn't available on this machine.",
+      unsupportedHostHint(support.reason),
+    );
+  }
+  const chosenGateway = process.env.NANOCLAW_GATEWAY_PROVIDER?.trim().toLowerCase();
+  if (chosenGateway && chosenGateway !== OPENSHELL_GATEWAY_KIND) {
+    await fail(
+      'openshell',
+      `OpenShell sandboxing uses the OpenShell gateway, but '${chosenGateway}' was selected.`,
+      'Re-run setup without a gateway selection, or without --openshell.',
+    );
+  }
+  // OpenShell itself is installed by the openshell-install step, after Docker.
+  const args = ['--enable', '--no-gateway', '--no-install'];
+  if (bin) args.push('--bin', bin);
+  if (gateway) args.push('--gateway', gateway);
+  const res = await runQuietStep(
+    'openshell',
+    { running: 'Configuring OpenShell sandboxing…', done: 'OpenShell sandboxing enabled.' },
+    args,
+  );
+  if (!res.ok) {
+    await fail('openshell', "Couldn't enable OpenShell sandboxing.", 'See logs/setup-steps/ for details, then retry.');
+  }
+  // Not yet installed is expected here; only a skipped install leaves it missing.
+  if (res.terminal?.fields.CLI_FOUND === 'false' && opts.installSkipped) {
+    p.log.warn(
+      brandBody(
+        `The openshell CLI was not found at ${res.terminal?.fields.OPENSHELL_BIN}. Install it before starting NanoClaw.`,
+      ),
+    );
+  }
+  return true;
+}
+
+/**
+ * Install OpenShell (`setup --step openshell-install`): its CLI and local
+ * gateway through NVIDIA's installer at the versions.json pin (nothing when
+ * already installed), then the gateway answers, its supervisor image is
+ * pulled, and it accepts NanoClaw's mounts. Windowed: a first install
+ * downloads the package and the gateway's images.
+ */
+async function runOpenShellInstall(): Promise<void> {
+  const res = await runWindowedStep('openshell-install', {
+    running: 'Installing OpenShell…',
+    done: 'OpenShell is installed and its gateway is running.',
+    failed: "Couldn't finish installing OpenShell.",
+  });
+  if (res.ok) {
+    if (Number(res.terminal?.fields.WARNINGS ?? 0) > 0) {
+      p.log.warn(brandBody('OpenShell installed with a warning; see logs/setup-steps/openshell-install.log.'));
+    }
+    return;
+  }
+  const fields = res.terminal?.fields ?? {};
+  // The gateway-settings hint is multi-line (TOML); the status block holds one line.
+  const hint =
+    fields.ERROR === 'gateway_config'
+      ? gatewayConfigRemedy(getPlatform())
+      : fields.HINT || 'See logs/setup-steps/ for the installer output, then retry.';
+  await fail('openshell-install', fields.MESSAGE || "Couldn't install OpenShell.", hint, res.rawLog);
+}
+
+/**
+ * The OpenShell setup web UI (`setup --step openshell-ui -- --enable`),
+ * started without asking whenever OpenShell is enabled; NANOCLAW_SKIP=openshell-ui
+ * leaves it out. Success prints only its URL. A failure is a warning, never
+ * fatal: the UI is a convenience and can be started later.
+ */
+async function startOpenShellUi(): Promise<void> {
+  const args = ['--enable'];
+  const port = process.env.NANOCLAW_OPENSHELL_UI_PORT?.trim();
+  if (port) args.push('--port', port);
+  const res = await runQuietStep(
+    'openshell-ui',
+    { running: 'Starting the OpenShell setup UI…', done: 'OpenShell setup UI running.' },
+    args,
+  );
+  const url = res.terminal?.fields.URL;
+  if (res.ok && url) {
+    p.log.info(brandBody(`OpenShell setup UI: ${url}`));
+  } else {
+    p.log.warn(
+      brandBody(
+        "The OpenShell setup UI didn't start (see logs/setup-steps/). Start it later with " +
+          '`pnpm exec tsx setup/index.ts --step openshell-ui -- --enable`.',
+      ),
+    );
   }
 }
 
@@ -1444,6 +1665,28 @@ async function chooseImageSource(): Promise<ImageSource | undefined> {
 
   setupLog.step('registry-login', 'interactive', durationMs, {});
   p.log.success(brandBody("Authenticated. Your assistant's sandbox will be fetched, not built."));
+}
+
+/**
+ * The agent runtime on an OpenShell install: always Claude, never prompted.
+ * The OpenShell gateway relays Anthropic credentials only (its auth.ts and
+ * credential-store.ts refuse any other provider), so Codex/OpenCode/… cannot
+ * work there and are not offered. A preset naming another provider is a
+ * contradiction and stops setup rather than being silently overridden.
+ */
+async function openShellAgentProvider(): Promise<string> {
+  const preset = process.env.NANOCLAW_AGENT_PROVIDER?.trim().toLowerCase();
+  if (preset && preset !== 'claude') {
+    await fail(
+      'auth',
+      `NANOCLAW_AGENT_PROVIDER=${preset} can't be used with OpenShell sandboxing.`,
+      'The OpenShell gateway relays Claude credentials only. Unset NANOCLAW_AGENT_PROVIDER (or set it to claude), or re-run setup without OpenShell.',
+    );
+  }
+  setupLog.userInput('agent_provider', 'claude');
+  phEmit('agent_provider_chosen', { provider: 'claude', ...(preset ? { preset: true } : {}), openshell: true });
+  p.log.info(brandBody('OpenShell sandboxing runs Claude — connecting your Claude account next.'));
+  return 'claude';
 }
 
 async function askAgentProviderChoice(): Promise<string> {

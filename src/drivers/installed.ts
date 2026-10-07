@@ -6,3 +6,8 @@
 // on purpose: an overlay that instead rewrote the construction expression in
 // `index.ts` would own a patch of this tree's internals, and every later edit
 // to selection would silently invalidate it.
+//
+// OpenShell ships in this tree but registers through this barrel, not in
+// `index.ts`: registration is inert (docker stays the default) and the module
+// is self-contained under `openshell/`, so `index.ts` keeps no knowledge of it.
+import './openshell/register.js';

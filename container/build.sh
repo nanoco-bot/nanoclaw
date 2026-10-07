@@ -219,6 +219,13 @@ else
     build_image "${BUILD_ARGS[@]}" -t "${IMAGE_NAME}:${TAG}" .
 fi
 
+# On the openshell runtime driver, re-derive the OpenShell image from the base
+# just built or pulled (WORKDIR moved out of the /workspace mount). No-op on
+# every other install. Same module setup's container step uses.
+if [ "$TAG" = "latest" ]; then
+    (cd "$PROJECT_ROOT" && pnpm --silent exec tsx setup/lib/openshell-image.ts --if-configured)
+fi
+
 echo ""
 if [ "$PULL" = "true" ]; then
     echo "Pull complete!"
