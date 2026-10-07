@@ -29,7 +29,7 @@ import {
   type RuleChunk,
 } from './commands.js';
 import { ACTOR, appendDecision, mergeHistory, readDecisions } from './history.js';
-import { PROVIDER_PROFILES, isGenericType } from './profiles.js';
+import { isGenericType, mergeProfiles, type CustomProfileInput, type ProfileTemplate } from './profiles.js';
 
 export interface ExecResult {
   code: number | null;
@@ -48,6 +48,12 @@ export interface UiDeps {
   runOpenShell(args: string[], env: Record<string, string>): Promise<ExecResult>;
   /** An `ncl openshell-policy-*` request, as the host caller. */
   dispatchPolicy(frame: PolicyFrame): Promise<DispatchResult>;
+  /**
+   * Any other `ncl` request the UI makes (custom provider profiles, per-group
+   * OpenShell resources), as the host caller — in-process, against the
+   * central DB. Same validation and storage as `ncl` itself.
+   */
+  dispatchNcl(frame: PolicyFrame): Promise<DispatchResult>;
   /** The add-openshell skill's `scripts/auth.ts claude` with this environment. */
   runCredentialScript(env: NodeJS.ProcessEnv): Promise<ExecResult>;
   /** setup/verify.ts checkCredentials() for this install. */
@@ -152,6 +158,15 @@ const STATIC: Record<string, { file: string; type: string }> = {
 export function createHandler(deps: UiDeps): (req: IncomingMessage, res: ServerResponse) => Promise<void> {
   const now = deps.now ?? (() => new Date());
 
+  /** Shipped + custom templates; custom ones unavailable (e.g. no DB yet) degrade to shipped only, with the reason. */
+  async function templates(): Promise<{ templates: ProfileTemplate[]; customError?: string }> {
+    const r = await deps.dispatchNcl({ command: 'openshell-provider-profile-list', args: {} });
+    if (!r.ok) return { templates: mergeProfiles([]), customError: r.error?.message ?? 'custom profiles unavailable' };
+    const custom = ((r.data as { profiles?: CustomProfileInput[] } | undefined)?.profiles ??
+      []) as CustomProfileInput[];
+    return { templates: mergeProfiles(custom) };
+  }
+
   async function decide(decision: 'approved' | 'rejected', body: Record<string, unknown>) {
     const frame =
       decision === 'approved'
@@ -201,11 +216,46 @@ export function createHandler(deps: UiDeps): (req: IncomingMessage, res: ServerR
 
     if (method === 'GET' && url.pathname === '/api/status') {
       const cred = deps.checkCredentials();
+      const t = await templates();
       send(res, 200, {
         gateway: deps.gatewayKind(),
         credential: { credentials: cred.credentials, ...parseCredentialSource(cred.credentialSource) },
-        providerTypes: PROVIDER_PROFILES.map((p) => ({ ...p, generic: p.credentialKeys.length === 0 })),
+        providerTypes: t.templates,
+        ...(t.customError ? { customProfilesError: t.customError } : {}),
       });
+      return;
+    }
+
+    if (method === 'GET' && url.pathname === '/api/profiles') {
+      send(res, 200, await templates());
+      return;
+    }
+
+    if (method === 'POST' && url.pathname === '/api/profiles') {
+      const body = await readJson(req);
+      const list = (v: unknown) =>
+        Array.isArray(v) ? v.map(String).join(',') : v === undefined ? undefined : String(v);
+      const r = await deps.dispatchNcl({
+        command: 'openshell-provider-profile-create',
+        args: {
+          id: String(body.id ?? ''),
+          ...(body.label !== undefined ? { label: String(body.label) } : {}),
+          ...(body.type !== undefined && body.type !== '' ? { type: String(body.type) } : {}),
+          ...(list(body.credentialKeys) !== undefined ? { credential_keys: list(body.credentialKeys) } : {}),
+          ...(list(body.configKeys) !== undefined ? { config_keys: list(body.configKeys) } : {}),
+          ...(body.description !== undefined ? { description: String(body.description) } : {}),
+        },
+      });
+      if (!r.ok) throw new HttpError(400, r.error?.message ?? 'could not save the profile');
+      send(res, 200, { ok: true, ...((r.data as object) ?? {}), ...(await templates()) });
+      return;
+    }
+
+    if (method === 'DELETE' && url.pathname === '/api/profiles') {
+      const id = url.searchParams.get('id') ?? '';
+      const r = await deps.dispatchNcl({ command: 'openshell-provider-profile-delete', args: { id } });
+      if (!r.ok) throw new HttpError(400, r.error?.message ?? 'could not delete the profile');
+      send(res, 200, { ok: true, id, ...(await templates()) });
       return;
     }
 
@@ -252,6 +302,7 @@ export function createHandler(deps: UiDeps): (req: IncomingMessage, res: ServerR
         throw new HttpError(400, (err as Error).message);
       }
       const secrets = Object.values(invocation.env);
+      const { templates: known } = await templates();
       const create = scrubExec(await deps.runOpenShell(invocation.args, invocation.env), secrets);
       // Read-back evidence: what the gateway now holds under that name.
       const readBack =
@@ -259,8 +310,8 @@ export function createHandler(deps: UiDeps): (req: IncomingMessage, res: ServerR
       send(res, create.code === 0 ? 200 : 502, {
         ok: create.code === 0,
         argv: ['openshell', ...invocation.args], // credential KEY names only; values went via the environment
-        generic: isGenericType(input.type),
-        missingDeclaredCredentials: missingDeclaredCredentials(input),
+        generic: isGenericType(input.type, known),
+        missingDeclaredCredentials: missingDeclaredCredentials(input, known),
         create,
         ...(readBack ? { readBack } : {}),
       });

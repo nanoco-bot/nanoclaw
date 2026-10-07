@@ -164,7 +164,10 @@ describe('pure builders (provider-commands.ts)', () => {
 describe('ncl openshell-provider', () => {
   it('registers attach / detach / list, operator-only; attach/detach approval-tier', async () => {
     const cmds = listCommands().filter(
-      (c) => c.name.startsWith('openshell-provider-') && c.name !== 'openshell-provider-help',
+      (c) =>
+        c.name.startsWith('openshell-provider-') &&
+        !c.name.startsWith('openshell-provider-profile') &&
+        c.name !== 'openshell-provider-help',
     );
     expect(cmds.map((c) => c.name).sort()).toEqual([
       'openshell-provider-attach',

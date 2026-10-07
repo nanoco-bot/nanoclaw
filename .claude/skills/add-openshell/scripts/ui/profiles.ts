@@ -60,12 +60,84 @@ export const PROVIDER_PROFILES: readonly ProviderProfile[] = [
   { id: 'pypi', label: 'PyPI', credentialKeys: [] },
 ];
 
-export function findProfile(id: string): ProviderProfile | undefined {
+/**
+ * A selectable template in the UI: a shipped profile above, or an operator's
+ * custom one (`ncl openshell-provider-profile`, openshell_provider_profiles).
+ * `type` is what `openshell provider create --type` gets; for shipped profiles
+ * it is the id.
+ */
+export interface ProfileTemplate {
+  id: string;
+  label: string;
+  type: string;
+  credentialKeys: readonly string[];
+  configKeys: readonly string[];
+  description?: string | null;
+  source: 'builtin' | 'custom';
+  generic: boolean;
+}
+
+/** The custom-profile fields the merge needs (src/db/openshell-provider-profiles.ts CustomProviderProfile). */
+export interface CustomProfileInput {
+  id: string;
+  label: string;
+  type: string;
+  credentialKeys: readonly string[];
+  configKeys: readonly string[];
+  description?: string | null;
+}
+
+/**
+ * Shipped + custom, by id. A custom profile with a shipped id replaces it:
+ * the operator's definition of a type (e.g. their own imported `github` with
+ * their image's binaries) is the more specific hint. Builtins first in their
+ * own order, then custom-only ids alphabetically.
+ */
+export function mergeProfiles(
+  custom: readonly CustomProfileInput[],
+  builtin: readonly ProviderProfile[] = PROVIDER_PROFILES,
+): ProfileTemplate[] {
+  const byId = new Map(custom.map((c) => [c.id, c]));
+  const fromCustom = (c: CustomProfileInput): ProfileTemplate => ({
+    id: c.id,
+    label: c.label,
+    type: c.type,
+    credentialKeys: [...c.credentialKeys],
+    configKeys: [...c.configKeys],
+    description: c.description ?? null,
+    source: 'custom',
+    generic: c.credentialKeys.length === 0,
+  });
+  const out: ProfileTemplate[] = builtin.map((b) => {
+    const c = byId.get(b.id);
+    return c
+      ? fromCustom(c)
+      : {
+          id: b.id,
+          label: b.label,
+          type: b.id,
+          credentialKeys: b.credentialKeys,
+          configKeys: [],
+          source: 'builtin',
+          generic: b.credentialKeys.length === 0,
+        };
+  });
+  const builtinIds = new Set(builtin.map((b) => b.id));
+  for (const c of [...custom].sort((a, b) => a.id.localeCompare(b.id)))
+    if (!builtinIds.has(c.id)) out.push(fromCustom(c));
+  return out;
+}
+
+export function findProfile(
+  id: string,
+  templates?: readonly ProfileTemplate[],
+): ProviderProfile | ProfileTemplate | undefined {
+  if (templates) return templates.find((p) => p.type === id) ?? templates.find((p) => p.id === id);
   return PROVIDER_PROFILES.find((p) => p.id === id);
 }
 
-/** Generic = no declared credential keys, or a profile id this table does not know (custom/imported). */
-export function isGenericType(id: string): boolean {
-  const profile = findProfile(id);
+/** Generic = no declared credential keys, or a type no template knows (imported straight into the gateway). */
+export function isGenericType(id: string, templates?: readonly ProfileTemplate[]): boolean {
+  const profile = findProfile(id, templates);
   return !profile || profile.credentialKeys.length === 0;
 }

@@ -59,6 +59,18 @@
     <input id="prov-custom" type="text" placeholder="an imported profile's id">
   </div>
   <p id="prov-type-hint" class="hint"></p>
+  <p id="profile-error" class="bad"></p>
+  <button class="secondary" id="profile-delete" type="button" hidden>Delete this custom profile</button>
+  <details id="profile-new">
+    <summary>Save a custom provider profile (template)</summary>
+    <p class="hint">A hint for this form only: the OpenShell gateway still decides whether the type exists (import its profile with <code>openshell provider profile import</code>). No credential values are saved — names only.</p>
+    <label for="profile-id">Profile id</label><input id="profile-id" type="text" placeholder="acme-crm">
+    <label for="profile-label">Label</label><input id="profile-label" type="text" placeholder="ACME CRM">
+    <label for="profile-type">OpenShell --type <span class="hint">(default: the id)</span></label><input id="profile-type" type="text">
+    <label for="profile-creds">Credential env-var names <span class="hint">(comma-separated)</span></label><input id="profile-creds" type="text" placeholder="ACME_API_KEY">
+    <label for="profile-config">Config keys <span class="hint">(comma-separated)</span></label><input id="profile-config" type="text" placeholder="region">
+    <div><button class="secondary" id="profile-save" type="button">Save profile</button></div>
+  </details>
   <label>Credentials <span class="hint">(--credential; env-var name + value)</span></label>
   <div id="prov-creds"></div>
   <button class="secondary" id="prov-add-cred" type="button">+ credential</button>

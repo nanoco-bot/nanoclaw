@@ -86,6 +86,29 @@ async function loadPolicyDispatch(): Promise<(frame: PolicyFrame) => Promise<Dis
   return policyDispatch;
 }
 
+let nclDispatch: ((frame: PolicyFrame) => Promise<DispatchResult>) | undefined;
+
+/**
+ * Commands that read or write the central DB (custom provider profiles,
+ * per-group providers / network paths). Opens `data/v2.db` once as a `tool`
+ * client — the same SQLite file the host has open (WAL; better-sqlite3 waits
+ * out a busy lock). The host owns migrations: before it has run the ones these
+ * tables need, the commands fail and the UI shows why.
+ */
+async function loadNclDispatch(projectRoot: string): Promise<(frame: PolicyFrame) => Promise<DispatchResult>> {
+  if (!nclDispatch) {
+    const { initDb } = await import('../../../../../src/db/connection.js');
+    await initDb(path.join(projectRoot, 'data', 'v2.db'), { role: 'tool' });
+    await import('../../../../../src/cli/resources/openshell-provider-profile.js');
+    const { dispatch } = await import('../../../../../src/cli/dispatch.js');
+    nclDispatch = async (frame) => {
+      const res = await dispatch({ id: randomUUID(), command: frame.command, args: frame.args }, { caller: 'host' });
+      return res.ok ? { ok: true, data: res.data } : { ok: false, error: res.error };
+    };
+  }
+  return nclDispatch;
+}
+
 export function realDeps(projectRoot: string = PROJECT_ROOT, run: ExecFileLike = execFile): UiDeps {
   return {
     async runOpenShell(args, env) {
@@ -100,6 +123,13 @@ export function realDeps(projectRoot: string = PROJECT_ROOT, run: ExecFileLike =
     },
     async dispatchPolicy(frame) {
       return (await loadPolicyDispatch())(frame);
+    },
+    async dispatchNcl(frame) {
+      try {
+        return (await loadNclDispatch(projectRoot))(frame);
+      } catch (err) {
+        return { ok: false, error: { code: 'unavailable', message: (err as Error).message } };
+      }
     },
     runCredentialScript(env) {
       return execCapture(run, process.execPath, credentialScriptArgs(tsxLoaderUrl(projectRoot), AUTH_SCRIPT), {

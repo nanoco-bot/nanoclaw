@@ -17,6 +17,7 @@ let dir: string;
 let deps: UiDeps & {
   runOpenShell: ReturnType<typeof vi.fn>;
   dispatchPolicy: ReturnType<typeof vi.fn>;
+  dispatchNcl: ReturnType<typeof vi.fn>;
   runCredentialScript: ReturnType<typeof vi.fn>;
   checkCredentials: ReturnType<typeof vi.fn>;
 };
@@ -48,6 +49,7 @@ beforeEach(async () => {
   deps = {
     runOpenShell: vi.fn(async () => exec()),
     dispatchPolicy: vi.fn(async () => policyOk('')),
+    dispatchNcl: vi.fn(async () => ({ ok: true, data: { profiles: [] } })),
     runCredentialScript: vi.fn(async () => exec('stored')),
     checkCredentials: vi.fn(() => ({ credentials: 'configured', credentialSource: 'running-service:api-key' })),
     gatewayKind: () => 'openshell',
@@ -372,5 +374,94 @@ describe('4 · history', () => {
     const r = await call('GET', '/api/history?sandbox=ncl-abc');
     expect(r.status).toBe(200);
     expect(r.json).toMatchObject({ entries: [], remoteError: 'gateway down' });
+  });
+});
+
+describe('custom provider profiles (templates)', () => {
+  const acme = {
+    id: 'acme-crm',
+    label: 'ACME CRM',
+    type: 'acme',
+    credentialKeys: ['ACME_API_KEY'],
+    configKeys: ['region'],
+  };
+
+  it('status and /api/profiles list shipped + custom templates; custom ones come from ncl in-process', async () => {
+    deps.dispatchNcl.mockResolvedValue({ ok: true, data: { profiles: [acme] } });
+    const status = await call('GET', '/api/status');
+    const t = status.json?.providerTypes.find((p: { id: string }) => p.id === 'acme-crm');
+    expect(t).toMatchObject({
+      source: 'custom',
+      type: 'acme',
+      credentialKeys: ['ACME_API_KEY'],
+      configKeys: ['region'],
+    });
+    expect(status.json?.providerTypes.find((p: { id: string }) => p.id === 'anthropic')).toMatchObject({
+      source: 'builtin',
+    });
+    expect(deps.dispatchNcl).toHaveBeenCalledWith({ command: 'openshell-provider-profile-list', args: {} });
+    const profiles = await call('GET', '/api/profiles');
+    expect(profiles.json?.templates.map((p: { id: string }) => p.id)).toContain('acme-crm');
+  });
+
+  it('custom profiles unavailable (e.g. host has not migrated yet): shipped list still served, with the reason', async () => {
+    deps.dispatchNcl.mockResolvedValue({ ok: false, error: { code: 'unavailable', message: 'no such table' } });
+    const r = await call('GET', '/api/status');
+    expect(r.status).toBe(200);
+    expect(r.json?.customProfilesError).toBe('no such table');
+    expect(r.json?.providerTypes.length).toBeGreaterThan(10);
+  });
+
+  it('POST /api/profiles creates through ncl (names only) and returns the refreshed list', async () => {
+    deps.dispatchNcl.mockImplementation(async (frame: PolicyFrame) =>
+      frame.command === 'openshell-provider-profile-create'
+        ? { ok: true, data: { profile: { ...acme } } }
+        : { ok: true, data: { profiles: [acme] } },
+    );
+    const r = await call('POST', '/api/profiles', {
+      id: 'acme-crm',
+      label: 'ACME CRM',
+      type: 'acme',
+      credentialKeys: ['ACME_API_KEY'],
+      configKeys: ['region'],
+    });
+    expect(r.status).toBe(200);
+    expect(deps.dispatchNcl.mock.calls[0][0]).toEqual({
+      command: 'openshell-provider-profile-create',
+      args: { id: 'acme-crm', label: 'ACME CRM', type: 'acme', credential_keys: 'ACME_API_KEY', config_keys: 'region' },
+    });
+    expect(r.json?.profile.id).toBe('acme-crm');
+    expect(r.json?.templates.some((p: { id: string }) => p.id === 'acme-crm')).toBe(true);
+  });
+
+  it('a refused profile is a 400 with ncl’s reason; delete goes through ncl too', async () => {
+    deps.dispatchNcl.mockResolvedValueOnce({
+      ok: false,
+      error: { code: 'handler-error', message: "profile id 'Bad' must be lowercase" },
+    });
+    const bad = await call('POST', '/api/profiles', { id: 'Bad' });
+    expect(bad.status).toBe(400);
+    expect(bad.json?.error).toMatch(/must be lowercase/);
+    deps.dispatchNcl.mockResolvedValue({ ok: true, data: { profiles: [] } });
+    const del = await call('DELETE', '/api/profiles?id=acme-crm');
+    expect(del.status).toBe(200);
+    expect(deps.dispatchNcl).toHaveBeenCalledWith({
+      command: 'openshell-provider-profile-delete',
+      args: { id: 'acme-crm' },
+    });
+  });
+
+  it('selecting a custom template: create uses its --type, and the missing-credential hint uses its keys', async () => {
+    deps.dispatchNcl.mockResolvedValue({ ok: true, data: { profiles: [acme] } });
+    deps.runOpenShell.mockResolvedValueOnce(exec('ok')).mockResolvedValueOnce(exec('Name: acme-1'));
+    const r = await call('POST', '/api/providers', { name: 'acme-1', type: 'acme', credentials: [] });
+    expect(deps.runOpenShell.mock.calls[0][0]).toEqual(['provider', 'create', '--name', 'acme-1', '--type', 'acme']);
+    expect(r.json).toMatchObject({ ok: true, generic: false, missingDeclaredCredentials: ['ACME_API_KEY'] });
+  });
+
+  it('the page has the template select and the save-profile form', async () => {
+    const page = await call('GET', '/');
+    for (const id of ['prov-type', 'profile-save', 'profile-id', 'profile-creds', 'profile-delete'])
+      expect(page.text).toContain(`id="${id}"`);
   });
 });

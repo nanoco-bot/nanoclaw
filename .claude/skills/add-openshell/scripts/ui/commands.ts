@@ -10,7 +10,7 @@
  *    (src/cli/resources/openshell-policy.ts), dispatched in-process.
  */
 import { assertSafeCredential, type CredentialKind } from '../../../../../setup/lib/openshell-credential.js';
-import { findProfile } from './profiles.js';
+import { findProfile, type ProfileTemplate } from './profiles.js';
 
 // ---------------------------------------------------------------------------
 // openshell provider create / get / list
@@ -94,9 +94,12 @@ export function providerCreateInvocation(input: ProviderCreateInput): Invocation
   return { args, env };
 }
 
-/** Credential keys the selected builtin profile declares that the form did not fill — a hint, not a refusal. */
-export function missingDeclaredCredentials(input: ProviderCreateInput): string[] {
-  const declared = findProfile(String(input.type ?? '').trim())?.credentialKeys ?? [];
+/** Credential keys the selected profile (shipped or custom) declares that the form did not fill — a hint, not a refusal. */
+export function missingDeclaredCredentials(
+  input: ProviderCreateInput,
+  templates?: readonly ProfileTemplate[],
+): string[] {
+  const declared = findProfile(String(input.type ?? '').trim(), templates)?.credentialKeys ?? [];
   const given = new Set((input.credentials ?? []).map((c) => String(c.key).trim()));
   return declared.filter((k) => !given.has(k));
 }

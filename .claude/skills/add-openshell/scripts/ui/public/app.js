@@ -76,12 +76,26 @@ let providerTypes = [];
 async function loadStatus() {
   const { data } = await api('GET', '/api/status');
   $('cred-status').replaceChildren(credentialLine(data.credential, data.gateway));
-  providerTypes = data.providerTypes || [];
+  renderTemplates(data.providerTypes || [], data.customProfilesError);
+}
+
+// Shipped + custom provider templates (GET /api/status, /api/profiles).
+function renderTemplates(templates, customError) {
+  providerTypes = templates;
   const select = $('prov-type');
+  const keep = select.value;
   select.replaceChildren(
-    ...providerTypes.map((p) => el('option', { value: p.id }, `${p.id} — ${p.label}${p.generic ? ' (generic)' : ''}`)),
-    el('option', { value: '__custom__' }, 'custom profile id… (generic)'),
+    ...providerTypes.map((p) =>
+      el(
+        'option',
+        { value: p.id },
+        `${p.id} — ${p.label}${p.source === 'custom' ? ' [custom]' : ''}${p.generic ? ' (generic)' : ''}`,
+      ),
+    ),
+    el('option', { value: '__custom__' }, 'other type id… (generic)'),
   );
+  if (keep && providerTypes.some((p) => p.id === keep)) select.value = keep;
+  $('profile-error').textContent = customError ? `Custom profiles unavailable: ${customError}` : '';
   onTypeChange();
 }
 
@@ -126,6 +140,10 @@ function onTypeChange() {
   const custom = id === '__custom__';
   $('prov-custom-wrap').hidden = !custom;
   const profile = providerTypes.find((p) => p.id === id);
+  $('profile-delete').hidden = !(profile && profile.source === 'custom');
+  const config = $('prov-config');
+  config.replaceChildren();
+  for (const key of (profile && profile.configKeys) || []) kvRow(config, key, 'KEY', false);
   const creds = $('prov-creds');
   creds.replaceChildren();
   if (profile && profile.credentialKeys.length) {
@@ -144,7 +162,8 @@ $('prov-add-config').addEventListener('click', () => kvRow($('prov-config'), '',
 
 $('prov-create').addEventListener('click', (e) =>
   busy(e.target, async () => {
-    const type = $('prov-type').value === '__custom__' ? $('prov-custom').value.trim() : $('prov-type').value;
+    const selected = providerTypes.find((p) => p.id === $('prov-type').value);
+    const type = $('prov-type').value === '__custom__' ? $('prov-custom').value.trim() : selected ? selected.type : '';
     const { data } = await api('POST', '/api/providers', {
       name: $('prov-name').value.trim(),
       type,
@@ -174,6 +193,37 @@ $('prov-list').addEventListener('click', (e) =>
   busy(e.target, async () => {
     const { data } = await api('GET', '/api/providers');
     $('prov-result').replaceChildren(execBlock('openshell provider list', data.list));
+  }),
+);
+
+// Custom provider profiles (hints, install-wide): save the current form's shape, or delete one.
+$('profile-save').addEventListener('click', (e) =>
+  busy(e.target, async () => {
+    const keys = (v) =>
+      v
+        .split(',')
+        .map((x) => x.trim())
+        .filter(Boolean);
+    const { status, data } = await api('POST', '/api/profiles', {
+      id: $('profile-id').value.trim(),
+      label: $('profile-label').value.trim(),
+      type: $('profile-type').value.trim(),
+      credentialKeys: keys($('profile-creds').value),
+      configKeys: keys($('profile-config').value),
+    });
+    if (status !== 200) return alert(data.error || 'Could not save the profile');
+    renderTemplates(data.templates || [], data.customError);
+    $('prov-type').value = data.profile.id;
+    onTypeChange();
+  }),
+);
+$('profile-delete').addEventListener('click', (e) =>
+  busy(e.target, async () => {
+    const id = $('prov-type').value;
+    if (!confirm(`Delete the custom profile '${id}'? Providers created with it are untouched.`)) return;
+    const { status, data } = await api('DELETE', `/api/profiles?id=${encodeURIComponent(id)}`);
+    if (status !== 200) return alert(data.error || 'Could not delete the profile');
+    renderTemplates(data.templates || [], data.customError);
   }),
 );
 
