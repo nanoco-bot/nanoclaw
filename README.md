@@ -47,6 +47,8 @@ bash nanoclaw.sh
 
 `nanoclaw.sh` walks you from a fresh machine to a named agent you can message. It installs Node, pnpm, and Docker if missing, installs a credential gateway and registers your Anthropic credential with it, builds the agent container, and pairs your first channel (Slack, Telegram, Discord, WhatsApp, iMessage, or a local CLI). If a step fails, Claude Code is invoked automatically to diagnose and resume from where it broke.
 
+Setup also asks whether to run agents in [NVIDIA OpenShell](#openshell-sandboxing) sandboxes instead of plain Docker containers. Answer yes, or set `NANOCLAW_OPENSHELL=true`, and it installs and configures OpenShell for you.
+
 <details>
 <summary><strong>Migrating from NanoClaw v1?</strong></summary>
 
@@ -94,8 +96,41 @@ See [docs/v1-to-v2-changes.md](docs/v1-to-v2-changes.md) for what's different an
 - **Scheduled tasks**: recurring jobs executed by the agent, with optional [script gates](docs/scheduled-tasks.md) that avoid waking it when there is no work
 - **Web access** — search and fetch content from the web
 - **Container isolation** — agents are sandboxed in Docker containers (macOS/Linux/WSL2)
+- **OpenShell sandboxing (opt-in)** — run agents in [NVIDIA OpenShell](#openshell-sandboxing) sandboxes, which enforce network egress and filesystem policy per agent, with per-group service credentials, live network rules, approve-on-demand for blocked requests, and a web console
 - **Credential security** — agents never hold raw API keys. Outbound requests route through a credential gateway that injects credentials at request time and enforces per-agent policies and rate limits. Which gateway is yours to pick: setup installs one (currently [OneCLI's Agent Vault](https://github.com/onecli/onecli)) behind a provider seam.
 - **Agent templates**: stamp a ready-to-run agent (instructions + MCP tools + skills, no secrets) from a reusable bundle via `ncl groups create --template <ref>`. Templates load from the local `templates/` folder; populate it by hand or by copying from the [public library](https://github.com/nanocoai/nanoclaw-templates). See [docs/templates.md](docs/templates.md).
+
+## OpenShell sandboxing
+
+[NVIDIA OpenShell](https://github.com/NVIDIA/OpenShell) runs each agent session in a sandbox that enforces what it may reach on the network and on disk. NanoClaw supports it as a standard install option, next to plain Docker.
+
+**Turn it on.** Answer yes to *"Enable OpenShell sandboxing?"* in `bash nanoclaw.sh`, or set `NANOCLAW_OPENSHELL=true`. Setup then:
+- installs OpenShell at the release pinned in `versions.json` (currently v0.1.2) with NVIDIA's installer, and starts its gateway;
+- configures the gateway to allow NanoClaw's session mounts. On Linux setup writes `~/.config/openshell/gateway.toml`; on macOS it prints the lines to add;
+- installs NanoClaw's model relay, so the Claude credential stays on the host and never enters a sandbox;
+- starts the setup web console and prints its URL.
+
+It runs on Linux (amd64/arm64, Debian- or RPM-based) and Apple silicon Macs; NVIDIA publishes no Intel Mac build. Docker is still required, because OpenShell's gateway runs sandboxes in it. An `openshell` already on your `PATH` that is older than the pinned release stops setup, with instructions to remove it.
+
+**What you get, per agent group:**
+- **Providers.** Give an agent a key for one service, such as GitHub or Granola, plus network access to that service only. The key goes to OpenShell; inside the sandbox the variable holds a placeholder that OpenShell swaps for the real key on the way out.
+- **Network access.** Allow hosts the agent may reach without a provider. Each rule names the programs allowed to connect.
+- **Approvals.** When an agent tries a host it isn't allowed to reach, OpenShell blocks the request and lists it for you. Allow it for the running sandbox, allow it always (saved for the group), or deny it.
+- **Activity.** Every change and decision, allowed and denied alike.
+
+Providers and network rules are saved for the group, so every new sandbox gets them, and they are also applied to the group's running sandboxes immediately. A newly attached key reaches the agent after its sandbox restarts; the console restarts it for you, and `ncl` does with `--restart`.
+
+**The console.** A small web page for all of the above, plus OpenShell's status and the Claude credential. It also creates *service types*, OpenShell's definition of a service (its hosts, how the key is sent, which programs may connect), since OpenShell ships none. It listens on port 8790 by default (`NANOCLAW_OPENSHELL_UI_PORT`). **It has no login of its own:** reach it only through a password-protected reverse proxy and keep the port firewalled.
+
+**From the command line:**
+
+```bash
+ncl openshell-provider attach --group <group> --openshell-provider <name> [--type <type> --stdin-json] [--restart]
+ncl openshell-network add --group <group> --name <rule> --host <host> --ports 443 --binary /usr/bin/curl
+ncl openshell-policy-list --sandbox <sandbox>     # blocked requests; approve / reject with their chunk id
+```
+
+Details, including the gateway configuration and the provider model: [`.claude/skills/add-openshell/SKILL.md`](.claude/skills/add-openshell/SKILL.md) and the console's [README](.claude/skills/add-openshell/scripts/ui/README.md).
 
 ## Accounts and what leaves your machine
 
@@ -181,6 +216,7 @@ No channel or provider skills are currently requested — propose one via an iss
 - macOS or Linux (Windows via WSL2)
 - Node.js 22+ and pnpm 10+ (the installer will install both if missing)
 - [Docker Desktop](https://docker.com/products/docker-desktop) (macOS/Windows) or Docker Engine (Linux)
+- For OpenShell sandboxing (optional): Linux or an Apple silicon Mac. Setup installs OpenShell itself; on Linux it needs root or passwordless `sudo`, and on macOS Homebrew.
 - [Claude Code](https://claude.ai/download) for `/customize`, `/debug`, error recovery during setup, and all `/add-<channel>` skills
 
 ## Architecture
