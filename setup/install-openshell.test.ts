@@ -107,6 +107,33 @@ describe('setup/install-openshell.sh', () => {
     expect(r.curl).toBe('');
   });
 
+  it('refuses an install older than the pin (an early pip/uv CLI) and says how to remove it; nothing downloaded', () => {
+    fake('openshell', 'echo "openshell 0.0.68"');
+    installerWill('install');
+    const r = runScript();
+    expect(r.code).toBe(1);
+    expect(r.fields.STATUS).toBe('failed');
+    expect(r.fields.OPENSHELL_VERSION).toBe('openshell 0.0.68');
+    expect(r.fields.ERROR).toContain(`is older than ${PIN}`);
+    expect(r.fields.ERROR).toContain('uv tool uninstall openshell');
+    expect(r.curl).toBe('');
+  });
+
+  it('accepts an install newer than the pin, with a NOTE', () => {
+    fake('openshell', 'echo "openshell 99.0.0"');
+    const r = runScript();
+    expect(r.code).toBe(0);
+    expect(r.fields.STATUS).toBe('already-installed');
+    expect(r.stdout).toContain(`newer than the pinned ${PIN}`);
+  });
+
+  it('OPENSHELL_VERSION=dev skips the version check', () => {
+    fake('openshell', 'echo "openshell 0.0.68"');
+    const r = runScript({ OPENSHELL_VERSION: 'dev' });
+    expect(r.code).toBe(0);
+    expect(r.fields.STATUS).toBe('already-installed');
+  });
+
   it('installs the versions.json pin with NVIDIA’s installer from that release tag', () => {
     installerWill('install');
     const r = runScript();

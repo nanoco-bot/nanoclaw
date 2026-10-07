@@ -25,7 +25,10 @@
 # against that pinned release. Other installer variables
 # (OPENSHELL_INSTALL_METHOD, OPENSHELL_ACK_BREAKING_UPGRADE) pass through too.
 #
-# Idempotent: when `openshell` is already on PATH it changes nothing.
+# Idempotent: when `openshell` is already on PATH it changes nothing, unless
+# that install is older than the pin: then it stops and says how to remove it,
+# because an old CLI on PATH (e.g. an early pip/uv install) talks to no
+# gateway NanoClaw can use, and the service fails at start.
 set -euo pipefail
 
 echo "=== NANOCLAW SETUP: INSTALL_OPENSHELL ==="
@@ -37,10 +40,52 @@ fail() {
   exit 1
 }
 
+# The "openshell" pin in versions.json, or nothing.
+read_pin() {
+  local versions_file
+  versions_file="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/versions.json"
+  tr -d '\n' <"$versions_file" 2>/dev/null |
+    grep -o '"openshell"[[:space:]]*:[[:space:]]*"[^"]*"' |
+    head -n1 | sed 's/.*:[[:space:]]*"//; s/"$//' || true
+}
+
+# "X.Y.Z" from `openshell X.Y.Z` / `vX.Y.Z`, or nothing.
+semver() {
+  echo "$1" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n1 || true
+}
+
+# Exit 0 when version $1 < $2 (both X.Y.Z).
+version_lt() {
+  local a1 a2 a3 b1 b2 b3
+  IFS=. read -r a1 a2 a3 <<<"$1"
+  IFS=. read -r b1 b2 b3 <<<"$2"
+  [ "$a1" -ne "$b1" ] && { [ "$a1" -lt "$b1" ]; return; }
+  [ "$a2" -ne "$b2" ] && { [ "$a2" -lt "$b2" ]; return; }
+  [ "$a3" -lt "$b3" ]
+}
+
 if command -v openshell >/dev/null 2>&1; then
+  found_bin="$(command -v openshell)"
+  found_version="$(openshell --version 2>/dev/null || echo unknown)"
+  want="${OPENSHELL_VERSION:-$(read_pin)}"
+  have="$(semver "$found_version")"
+  case "$want" in
+    v[0-9]*)
+      want="$(semver "$want")"
+      if [ -n "$have" ] && [ -n "$want" ]; then
+        if version_lt "$have" "$want"; then
+          echo "OPENSHELL_VERSION: $found_version"
+          echo "OPENSHELL_BIN: $found_bin"
+          fail "openshell $have at $found_bin is older than v$want, the release NanoClaw's OpenShell driver is verified against. Remove it the way it was installed (an early pip/uv install: 'uv tool uninstall openshell'; Homebrew: 'brew upgrade nvidia/openshell/openshell'), then re-run setup to install v$want."
+        elif version_lt "$want" "$have"; then
+          echo "NOTE: openshell $have is newer than the pinned v$want; NanoClaw is verified against v$want"
+        fi
+      fi
+      ;;
+  esac
   echo "STATUS: already-installed"
-  echo "OPENSHELL_VERSION: $(openshell --version 2>/dev/null || echo unknown)"
-  echo "OPENSHELL_BIN: $(command -v openshell)"
+  echo "OPENSHELL_VERSION: $found_version"
+  echo "OPENSHELL_BIN: $found_bin"
   echo "=== END ==="
   exit 0
 fi
@@ -69,10 +114,7 @@ if ! command -v curl >/dev/null 2>&1; then
 fi
 
 if [ -z "${OPENSHELL_VERSION:-}" ] && [ "${OPENSHELL_INSTALL_METHOD:-}" != "snap" ]; then
-  versions_file="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/versions.json"
-  OPENSHELL_VERSION="$(tr -d '\n' <"$versions_file" 2>/dev/null |
-    grep -o '"openshell"[[:space:]]*:[[:space:]]*"[^"]*"' |
-    head -n1 | sed 's/.*:[[:space:]]*"//; s/"$//')" || true
+  OPENSHELL_VERSION="$(read_pin)"
   [ -n "$OPENSHELL_VERSION" ] || fail "versions.json has no \"openshell\" pin; set OPENSHELL_VERSION to the release to install."
 fi
 # Snap installs take a channel, not a release tag; the installer refuses a tag.
