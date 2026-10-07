@@ -29,6 +29,8 @@ export interface DecisionRecord {
   ok: boolean;
   error?: string;
   actor: string;
+  /** The agent group the decision was made for, when made from a group tab. */
+  group?: { id: string; folder: string };
 }
 
 export interface HistoryEntry {

@@ -53,6 +53,10 @@ beforeEach(async () => {
     runCredentialScript: vi.fn(async () => exec('stored')),
     checkCredentials: vi.fn(() => ({ credentials: 'configured', credentialSource: 'running-service:api-key' })),
     gatewayKind: () => 'openshell',
+    listGroups: async () => [],
+    groupSessions: async () => [],
+    sandboxName: (g: string, s: string) => `ncl-${g}-${s}`,
+    changeLog: path.join(dir, 'data', 'openshell-policy', 'changes.jsonl'),
     decisionLog: path.join(dir, 'data', 'openshell-setup-ui', 'decisions.jsonl'),
     staticDir: STATIC_DIR,
     now: () => new Date('2026-10-05T12:00:00.000Z'),
@@ -68,12 +72,16 @@ afterEach(async () => {
 });
 
 describe('static page', () => {
-  it('serves the HTML and the script, with the four panels', async () => {
+  it('serves the HTML and the script: install-wide credential, group selector, four group tabs', async () => {
     const page = await call('GET', '/');
     expect(page.status).toBe(200);
     expect(page.type).toMatch(/text\/html/);
-    for (const id of ['credential', 'providers', 'policy', 'history'])
-      expect(page.text).toContain(`<section id="${id}">`);
+    for (const id of ['credential', 'group']) expect(page.text).toContain(`<section id="${id}">`);
+    for (const tab of ['providers', 'network', 'approvals', 'audit']) {
+      expect(page.text).toContain(`id="tab-${tab}"`);
+      expect(page.text).toContain(`data-tab="${tab}"`);
+    }
+    expect(page.text).toContain('id="group-select"');
     const js = await call('GET', '/app.js');
     expect(js.type).toMatch(/javascript/);
     expect(js.text).not.toMatch(/\.innerHTML\s*=|insertAdjacentHTML|document\.write/);

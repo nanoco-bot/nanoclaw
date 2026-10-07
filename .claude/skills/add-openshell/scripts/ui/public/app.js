@@ -35,6 +35,11 @@ function pre(text) {
   return el('pre', {}, text && text.length ? text : '(no output)');
 }
 
+function table(headers, rows, empty) {
+  if (!rows.length) return el('p', { class: 'hint' }, empty);
+  return el('table', {}, el('tr', {}, ...headers.map((h) => el('th', {}, h))), ...rows);
+}
+
 function execBlock(title, r) {
   if (!r) return null;
   return el(
@@ -59,7 +64,11 @@ async function busy(button, fn) {
   }
 }
 
-// ---- 1. credential --------------------------------------------------------
+function fail(out, data) {
+  out.replaceChildren(el('p', { class: 'bad' }, data.error || 'Failed'));
+}
+
+// ---- credential (install-wide) ---------------------------------------------
 function credentialLine(c, gateway) {
   if (gateway !== 'openshell')
     return el(
@@ -70,33 +79,6 @@ function credentialLine(c, gateway) {
   return c.credentials === 'configured'
     ? el('span', { class: 'ok' }, `Detected: ${c.kind} (read from ${c.source})`)
     : el('span', { class: 'bad' }, `No credential where the relay reads it (${c.source}).`);
-}
-
-let providerTypes = [];
-async function loadStatus() {
-  const { data } = await api('GET', '/api/status');
-  $('cred-status').replaceChildren(credentialLine(data.credential, data.gateway));
-  renderTemplates(data.providerTypes || [], data.customProfilesError);
-}
-
-// Shipped + custom provider templates (GET /api/status, /api/profiles).
-function renderTemplates(templates, customError) {
-  providerTypes = templates;
-  const select = $('prov-type');
-  const keep = select.value;
-  select.replaceChildren(
-    ...providerTypes.map((p) =>
-      el(
-        'option',
-        { value: p.id },
-        `${p.id} — ${p.label}${p.source === 'custom' ? ' [custom]' : ''}${p.generic ? ' (generic)' : ''}`,
-      ),
-    ),
-    el('option', { value: '__custom__' }, 'other type id… (generic)'),
-  );
-  if (keep && providerTypes.some((p) => p.id === keep)) select.value = keep;
-  $('profile-error').textContent = customError ? `Custom profiles unavailable: ${customError}` : '';
-  onTypeChange();
 }
 
 $('cred-save').addEventListener('click', (e) =>
@@ -110,11 +92,63 @@ $('cred-save').addEventListener('click', (e) =>
         execBlock('scripts/auth.ts', data.script),
       );
       $('cred-status').replaceChildren(credentialLine(data.credential, data.gateway));
-    } else out.replaceChildren(el('p', { class: 'bad' }, data.error || 'Failed'));
+    } else fail(out, data);
   }),
 );
 
-// ---- 2. providers ---------------------------------------------------------
+// ---- group selector + tabs ---------------------------------------------------
+function group() {
+  return $('group-select').value;
+}
+const loaders = {};
+let activeTab = 'providers';
+
+function showTab(name) {
+  activeTab = name;
+  for (const b of document.querySelectorAll('[role=tab]'))
+    b.setAttribute('aria-selected', String(b.dataset.tab === name));
+  for (const p of document.querySelectorAll('[role=tabpanel]')) p.hidden = p.id !== `tab-${name}`;
+  if (group() && loaders[name]) loaders[name]().catch((err) => alert(String(err)));
+}
+for (const b of document.querySelectorAll('[role=tab]')) b.addEventListener('click', () => showTab(b.dataset.tab));
+
+async function loadGroups() {
+  const { data } = await api('GET', '/api/groups');
+  const groups = data.groups || [];
+  $('group-select').replaceChildren(
+    ...(groups.length
+      ? groups.map((g) => el('option', { value: g.id }, `${g.name} (${g.folder})`))
+      : [el('option', { value: '' }, data.error ? `Groups unavailable: ${data.error}` : 'No agent groups yet')]),
+  );
+  showTab(activeTab);
+}
+$('group-select').addEventListener('change', () => {
+  $('appr-sandbox').replaceChildren(el('option', { value: '' }, '(default)'));
+  showTab(activeTab);
+});
+
+// ---- Providers tab -------------------------------------------------------------
+let providerTypes = [];
+function renderTemplates(templates, customError) {
+  providerTypes = templates;
+  const select = $('prov-type');
+  const keep = select.value;
+  select.replaceChildren(
+    el('option', { value: '__existing__' }, '— already in the gateway (attach only) —'),
+    ...providerTypes.map((p) =>
+      el(
+        'option',
+        { value: p.id },
+        `${p.id} — ${p.label}${p.source === 'custom' ? ' [custom]' : ''}${p.generic ? ' (generic)' : ''}`,
+      ),
+    ),
+    el('option', { value: '__custom__' }, 'other type id… (generic)'),
+  );
+  if (keep && [...select.options].some((o) => o.value === keep)) select.value = keep;
+  $('profile-error').textContent = customError ? `Custom profiles unavailable: ${customError}` : '';
+  onTypeChange();
+}
+
 function kvRow(container, key, placeholderKey, isSecret) {
   const k = el('input', { type: 'text', placeholder: placeholderKey, value: key || '' });
   const v = el('input', { type: isSecret ? 'password' : 'text', placeholder: 'value', autocomplete: 'off' });
@@ -137,8 +171,8 @@ function kvValues(container) {
 }
 function onTypeChange() {
   const id = $('prov-type').value;
-  const custom = id === '__custom__';
-  $('prov-custom-wrap').hidden = !custom;
+  $('prov-custom-wrap').hidden = id !== '__custom__';
+  $('prov-create-fields').hidden = id === '__existing__';
   const profile = providerTypes.find((p) => p.id === id);
   $('profile-delete').hidden = !(profile && profile.source === 'custom');
   const config = $('prov-config');
@@ -146,13 +180,13 @@ function onTypeChange() {
   for (const key of (profile && profile.configKeys) || []) kvRow(config, key, 'KEY', false);
   const creds = $('prov-creds');
   creds.replaceChildren();
-  if (profile && profile.credentialKeys.length) {
-    $('prov-type-hint').textContent =
-      `Declared credential variables: ${profile.credentialKeys.join(', ')}. Fill the ones you have; add others below if needed.`;
+  if (id === '__existing__') {
+    $('prov-type-hint').textContent = 'The gateway must already have a provider with this name (checked first).';
+  } else if (profile && profile.credentialKeys.length) {
+    $('prov-type-hint').textContent = `Declared credential variables: ${profile.credentialKeys.join(', ')}.`;
     for (const key of profile.credentialKeys) kvRow(creds, key, 'ENV_VAR_NAME', true);
   } else {
-    $('prov-type-hint').textContent =
-      'Generic profile: name the environment variable the workload expects and give its value.';
+    $('prov-type-hint').textContent = 'Generic: name the environment variable the workload expects and give its value.';
     kvRow(creds, '', 'ENV_VAR_NAME', true);
   }
 }
@@ -160,33 +194,66 @@ $('prov-type').addEventListener('change', onTypeChange);
 $('prov-add-cred').addEventListener('click', () => kvRow($('prov-creds'), '', 'ENV_VAR_NAME', true));
 $('prov-add-config').addEventListener('click', () => kvRow($('prov-config'), '', 'KEY', false));
 
-$('prov-create').addEventListener('click', (e) =>
+loaders.providers = async () => {
+  const { data } = await api('GET', `/api/groups/providers?group=${encodeURIComponent(group())}`);
+  const out = $('prov-attached');
+  if (!data.providers) return fail(out, data);
+  out.replaceChildren(
+    table(
+      ['Provider', 'Type', 'Credential keys', 'Attached', ''],
+      data.providers.map((p) =>
+        el(
+          'tr',
+          {},
+          el('td', {}, p.name),
+          el('td', {}, p.type || '—'),
+          el('td', {}, (p.credentialKeys || []).join(', ') || '—'),
+          el('td', {}, p.attachedAt),
+          el(
+            'td',
+            {},
+            el(
+              'button',
+              {
+                class: 'secondary',
+                onclick: (e) =>
+                  busy(e.target, async () => {
+                    if (!confirm(`Detach ${p.name}? The provider stays in the gateway.`)) return;
+                    const r = await api(
+                      'DELETE',
+                      `/api/groups/providers?group=${encodeURIComponent(group())}&name=${encodeURIComponent(p.name)}`,
+                    );
+                    if (r.status !== 200) alert(r.data.error || 'Failed');
+                    await loaders.providers();
+                  }),
+              },
+              'Detach',
+            ),
+          ),
+        ),
+      ),
+      'No OpenShell providers attached to this group.',
+    ),
+  );
+};
+
+$('prov-attach').addEventListener('click', (e) =>
   busy(e.target, async () => {
-    const selected = providerTypes.find((p) => p.id === $('prov-type').value);
-    const type = $('prov-type').value === '__custom__' ? $('prov-custom').value.trim() : selected ? selected.type : '';
-    const { data } = await api('POST', '/api/providers', {
-      name: $('prov-name').value.trim(),
-      type,
-      credentials: kvValues($('prov-creds')),
-      config: kvValues($('prov-config')),
-      globalProfile: $('prov-global').checked,
-    });
+    const choice = $('prov-type').value;
+    const selected = providerTypes.find((p) => p.id === choice);
+    const type =
+      choice === '__existing__' ? '' : choice === '__custom__' ? $('prov-custom').value.trim() : selected.type;
+    const body = { group: group(), name: $('prov-name').value.trim(), type };
+    if (type) {
+      body.credentials = kvValues($('prov-creds'));
+      body.config = kvValues($('prov-config'));
+    }
+    const { status, data } = await api('POST', '/api/groups/providers', body);
     for (const input of $('prov-creds').querySelectorAll('input[type=password]')) input.value = '';
     const out = $('prov-result');
-    if (!data.create) return out.replaceChildren(el('p', { class: 'bad' }, data.error || 'Failed'));
-    out.replaceChildren(
-      el(
-        'p',
-        { class: data.ok ? 'ok' : 'bad' },
-        data.ok ? 'Provider created.' : 'OpenShell refused the provider — its own error text is below.',
-      ),
-      el('div', { class: 'hint' }, `Ran: ${data.argv.join(' ')}  (credential values passed via environment)`),
-      data.missingDeclaredCredentials && data.missingDeclaredCredentials.length
-        ? el('div', { class: 'hint' }, `Not supplied: ${data.missingDeclaredCredentials.join(', ')}`)
-        : null,
-      execBlock('provider create', data.create),
-      data.readBack ? execBlock('read-back: openshell provider get', data.readBack) : null,
-    );
+    if (status !== 200) return fail(out, data);
+    out.replaceChildren(el('p', { class: 'ok' }, data.message || 'Attached.'));
+    await loaders.providers();
   }),
 );
 $('prov-list').addEventListener('click', (e) =>
@@ -196,7 +263,6 @@ $('prov-list').addEventListener('click', (e) =>
   }),
 );
 
-// Custom provider profiles (hints, install-wide): save the current form's shape, or delete one.
 $('profile-save').addEventListener('click', (e) =>
   busy(e.target, async () => {
     const keys = (v) =>
@@ -227,29 +293,96 @@ $('profile-delete').addEventListener('click', (e) =>
   }),
 );
 
-// ---- 3. policy -------------------------------------------------------------
-function sandbox() {
-  return $('pol-sandbox').value.trim();
-}
-async function listProposals() {
-  const status = $('pol-status').value;
-  const { data } = await api(
-    'GET',
-    `/api/policy?sandbox=${encodeURIComponent(sandbox())}&status=${encodeURIComponent(status)}`,
+// ---- Network paths tab ---------------------------------------------------------
+loaders.network = async () => {
+  const { data } = await api('GET', `/api/groups/network?group=${encodeURIComponent(group())}`);
+  const out = $('net-list');
+  if (!data.rules) return fail(out, data);
+  out.replaceChildren(
+    table(
+      ['Rule', 'Host', 'Ports', 'Binaries', ''],
+      data.rules.map((r) =>
+        el(
+          'tr',
+          {},
+          el('td', {}, r.name),
+          el('td', {}, r.host),
+          el('td', {}, r.ports.join(', ')),
+          el('td', {}, r.binaries.join(', ')),
+          el(
+            'td',
+            {},
+            el(
+              'button',
+              {
+                class: 'secondary',
+                onclick: (e) =>
+                  busy(e.target, async () => {
+                    const r2 = await api(
+                      'DELETE',
+                      `/api/groups/network?group=${encodeURIComponent(group())}&name=${encodeURIComponent(r.name)}`,
+                    );
+                    if (r2.status !== 200) alert(r2.data.error || 'Failed');
+                    await loaders.network();
+                  }),
+              },
+              'Remove',
+            ),
+          ),
+        ),
+      ),
+      'No network paths for this group.',
+    ),
   );
-  const out = $('pol-result');
-  if (!data.ok && data.output === undefined)
-    return out.replaceChildren(el('p', { class: 'bad' }, data.error || 'Failed'));
-  const rows = (data.chunks || []).map((c) => {
+};
+$('net-add').addEventListener('click', (e) =>
+  busy(e.target, async () => {
+    const { status, data } = await api('POST', '/api/groups/network', {
+      group: group(),
+      name: $('net-name').value.trim(),
+      host: $('net-host').value.trim(),
+      ports: $('net-ports').value.trim(),
+      binaries: $('net-binaries')
+        .value.split(/[,\n]/)
+        .map((x) => x.trim())
+        .filter(Boolean),
+    });
+    const out = $('net-result');
+    if (status !== 200) return fail(out, data);
+    out.replaceChildren(el('p', { class: 'ok' }, data.message || 'Added.'));
+    await loaders.network();
+  }),
+);
+
+// ---- Pending approvals tab -----------------------------------------------------
+loaders.approvals = async () => {
+  const status = $('appr-status').value;
+  const sandbox = $('appr-sandbox').value;
+  const q = `group=${encodeURIComponent(group())}&status=${encodeURIComponent(status)}${sandbox ? `&sandbox=${encodeURIComponent(sandbox)}` : ''}`;
+  const { data } = await api('GET', `/api/groups/policy?${q}`);
+  const out = $('appr-result');
+  if (data.chunks === undefined) return fail(out, data);
+  $('appr-sandbox').replaceChildren(
+    el('option', { value: '' }, '(default)'),
+    ...(data.sandboxes || []).map((c) =>
+      el('option', { value: c.sandbox }, `${c.sandbox} — session ${c.sessionId}, ${c.containerStatus}, ${c.createdAt}`),
+    ),
+  );
+  if (sandbox) $('appr-sandbox').value = sandbox;
+  if (!data.sandbox) return out.replaceChildren(el('p', { class: 'hint' }, data.note || 'No live sandbox.'));
+  const rows = data.chunks.map((c) => {
     const actions = el('td', {});
     if (status === 'pending') {
       const reason = el('input', { type: 'text', placeholder: 'reason (to reject)' });
       actions.append(
-        el('button', { onclick: (e) => busy(e.target, () => decide('approve', c.chunkId)) }, 'Approve'),
+        el('button', { onclick: (e) => busy(e.target, () => decide('approve', data.sandbox, c.chunkId)) }, 'Approve'),
         reason,
         el(
           'button',
-          { class: 'secondary', onclick: (e) => busy(e.target, () => decide('reject', c.chunkId, reason.value)) },
+          {
+            class: 'secondary',
+            onclick: (e) => busy(e.target, () => decide('reject', data.sandbox, c.chunkId, reason.value)),
+          },
           'Reject',
         ),
       );
@@ -266,72 +399,59 @@ async function listProposals() {
     );
   });
   out.replaceChildren(
+    el('div', { class: 'hint' }, `Sandbox ${data.sandbox}`),
     data.note ? el('div', { class: 'note' }, data.note) : null,
     data.error ? el('p', { class: 'bad' }, data.error) : null,
-    rows.length
-      ? el(
-          'table',
-          {},
-          el('tr', {}, ...['Chunk', 'Rule', 'Binary', 'Rationale', 'Status', ''].map((h) => el('th', {}, h))),
-          ...rows,
-        )
-      : el('p', {}, `No ${status} proposals parsed for ${data.sandbox || 'this sandbox'}.`),
+    table(['Chunk', 'Rule', 'Binary', 'Rationale', 'Status', ''], rows, `No ${status} proposals.`),
     el('div', { class: 'hint' }, 'Raw output'),
     pre(data.output),
   );
-}
-async function decide(action, chunkId, reason) {
-  const { data } = await api('POST', `/api/policy/${action}`, { sandbox: sandbox(), chunkId, reason });
+};
+async function decide(action, sandbox, chunkId, reason) {
+  const { data } = await api('POST', `/api/policy/${action}`, { group: group(), sandbox, chunkId, reason });
   alert(
     data.ok
       ? `${action === 'approve' ? 'Approved' : 'Rejected'} ${chunkId}.\n\n${data.output || ''}`
       : `Failed: ${data.error || ''}`,
   );
-  await listProposals();
-  await loadHistory();
+  await loaders.approvals();
 }
-$('pol-list').addEventListener('click', (e) => busy(e.target, listProposals));
-$('pol-view').addEventListener('click', (e) =>
-  busy(e.target, async () => {
-    const { data } = await api('GET', `/api/policy/view?sandbox=${encodeURIComponent(sandbox())}`);
-    $('pol-result').replaceChildren(
-      data.error ? el('p', { class: 'bad' }, data.error) : null,
-      pre(data.policy ? JSON.stringify(data.policy, null, 2) : data.output),
-    );
-  }),
-);
+$('appr-load').addEventListener('click', (e) => busy(e.target, loaders.approvals));
 
-// ---- 4. history ------------------------------------------------------------
-async function loadHistory() {
-  const q = sandbox() ? `?sandbox=${encodeURIComponent(sandbox())}` : '';
-  const { data } = await api('GET', `/api/history${q}`);
-  const rows = (data.entries || []).map((h) =>
-    el(
-      'tr',
-      {},
-      el('td', {}, h.ts || '—'),
-      el('td', {}, h.sandbox),
-      el('td', {}, h.chunkId),
-      el('td', {}, h.decision + (h.ok === false ? ' (failed)' : '')),
-      el('td', {}, h.reason || h.error || ''),
-      el('td', {}, el('span', { class: 'badge' }, h.source === 'ui-log' ? h.actor : 'openshell (outside UI)')),
+// ---- Audit log tab -------------------------------------------------------------
+loaders.audit = async () => {
+  const { data } = await api('GET', `/api/groups/audit?group=${encodeURIComponent(group())}`);
+  const out = $('audit-result');
+  if (!data.entries) return fail(out, data);
+  out.replaceChildren(
+    el('div', { class: 'hint' }, `Logs: ${data.logs.changes} · ${data.logs.decisions}`),
+    data.remoteError ? el('p', { class: 'bad' }, `OpenShell listing failed: ${data.remoteError}`) : null,
+    table(
+      ['When', 'What', 'Outcome', 'Sandbox', 'Detail', 'By'],
+      data.entries.map((a) =>
+        el(
+          'tr',
+          {},
+          el('td', {}, a.ts || '—'),
+          el('td', {}, a.action),
+          el('td', {}, el('span', { class: `badge ${a.outcome}` }, a.outcome)),
+          el('td', {}, a.sandbox || '—'),
+          el('td', {}, a.detail + (a.error ? ` · ${a.error}` : '')),
+          el('td', {}, a.actor || a.source),
+        ),
+      ),
+      'Nothing recorded for this group yet.',
     ),
   );
-  $('hist-result').replaceChildren(
-    el('div', { class: 'hint' }, `Log file: ${data.logFile || ''}`),
-    data.remoteError ? el('p', { class: 'bad' }, `OpenShell listing failed: ${data.remoteError}`) : null,
-    rows.length
-      ? el(
-          'table',
-          {},
-          el('tr', {}, ...['When', 'Sandbox', 'Chunk', 'Decision', 'Reason / error', 'By'].map((h) => el('th', {}, h))),
-          ...rows,
-        )
-      : el('p', {}, 'No decisions recorded yet.'),
-  );
-}
-$('hist-load').addEventListener('click', (e) => busy(e.target, loadHistory));
+};
+$('audit-load').addEventListener('click', (e) => busy(e.target, loaders.audit));
 
-loadStatus().catch((err) => {
+// ---- start ---------------------------------------------------------------------
+(async () => {
+  const { data } = await api('GET', '/api/status');
+  $('cred-status').replaceChildren(credentialLine(data.credential, data.gateway));
+  renderTemplates(data.providerTypes || [], data.customProfilesError);
+  await loadGroups();
+})().catch((err) => {
   $('cred-status').textContent = `Could not load status: ${err}`;
 });

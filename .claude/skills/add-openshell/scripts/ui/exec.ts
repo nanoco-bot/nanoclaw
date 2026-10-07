@@ -19,7 +19,9 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { openShellGatewayEnv, openShellSettingsEnv } from '../../../../../src/drivers/openshell/config.js';
+import { sandboxName } from '../../../../../src/drivers/openshell/realize.js';
 import { settingsFromEnv } from '../../../../../src/drivers/openshell/settings.js';
+import { getInstallSlug } from '../../../../../src/install-slug.js';
 import { readEnvFile } from '../../../../../src/env.js';
 import { credentialScriptArgs, type PolicyFrame } from './commands.js';
 import type { DispatchResult, ExecResult, UiDeps } from './routes.js';
@@ -86,6 +88,19 @@ async function loadPolicyDispatch(): Promise<(frame: PolicyFrame) => Promise<Dis
   return policyDispatch;
 }
 
+let dbReady: Promise<void> | undefined;
+/** Open the central DB once for this process (see loadNclDispatch). */
+function ensureDb(projectRoot: string): Promise<void> {
+  dbReady ??= (async () => {
+    const { initDb } = await import('../../../../../src/db/connection.js');
+    await initDb(path.join(projectRoot, 'data', 'v2.db'), { role: 'tool' });
+  })().catch((err) => {
+    dbReady = undefined; // retry on the next request
+    throw err;
+  });
+  return dbReady;
+}
+
 let nclDispatch: ((frame: PolicyFrame) => Promise<DispatchResult>) | undefined;
 
 /**
@@ -97,9 +112,10 @@ let nclDispatch: ((frame: PolicyFrame) => Promise<DispatchResult>) | undefined;
  */
 async function loadNclDispatch(projectRoot: string): Promise<(frame: PolicyFrame) => Promise<DispatchResult>> {
   if (!nclDispatch) {
-    const { initDb } = await import('../../../../../src/db/connection.js');
-    await initDb(path.join(projectRoot, 'data', 'v2.db'), { role: 'tool' });
+    await ensureDb(projectRoot);
     await import('../../../../../src/cli/resources/openshell-provider-profile.js');
+    await import('../../../../../src/cli/resources/openshell-provider.js');
+    await import('../../../../../src/cli/resources/openshell-network.js');
     const { dispatch } = await import('../../../../../src/cli/dispatch.js');
     nclDispatch = async (frame) => {
       const res = await dispatch({ id: randomUUID(), command: frame.command, args: frame.args }, { caller: 'host' });
@@ -148,6 +164,25 @@ export function realDeps(projectRoot: string = PROJECT_ROOT, run: ExecFileLike =
         ''
       ).toLowerCase();
     },
+    async listGroups() {
+      await ensureDb(projectRoot);
+      const { getAllAgentGroups } = await import('../../../../../src/db/agent-groups.js');
+      return (await getAllAgentGroups()).map(({ id, name, folder }) => ({ id, name, folder }));
+    },
+    async groupSessions(agentGroupId) {
+      await ensureDb(projectRoot);
+      const { getSessionsByAgentGroup } = await import('../../../../../src/db/sessions.js');
+      return (await getSessionsByAgentGroup(agentGroupId)).map(({ id, status, container_status, created_at }) => ({
+        id,
+        status,
+        container_status,
+        created_at,
+      }));
+    },
+    sandboxName(agentGroupId, sessionId) {
+      return sandboxName({ installSlug: getInstallSlug(projectRoot), agentGroupId, sessionId });
+    },
+    changeLog: path.join(projectRoot, 'data', 'openshell-policy', 'changes.jsonl'),
     decisionLog: path.join(projectRoot, 'data', 'openshell-setup-ui', 'decisions.jsonl'),
     staticDir: STATIC_DIR,
   };

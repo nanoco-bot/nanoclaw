@@ -28,6 +28,13 @@ import {
   type ProviderCreateInput,
   type RuleChunk,
 } from './commands.js';
+import {
+  groupAudit,
+  sandboxCandidates,
+  type ChangeRecord,
+  type GroupSummary,
+  type SessionSummary,
+} from './group-view.js';
 import { ACTOR, appendDecision, mergeHistory, readDecisions } from './history.js';
 import { isGenericType, mergeProfiles, type CustomProfileInput, type ProfileTemplate } from './profiles.js';
 
@@ -59,6 +66,14 @@ export interface UiDeps {
   /** setup/verify.ts checkCredentials() for this install. */
   checkCredentials(): { credentials: string; credentialSource: string };
   gatewayKind(): string;
+  /** Agent groups (central DB), for the per-group tabs. */
+  listGroups(): Promise<GroupSummary[]>;
+  /** A group's sessions (central DB): each is one OpenShell sandbox. */
+  groupSessions(agentGroupId: string): Promise<SessionSummary[]>;
+  /** The sandbox name the OpenShell driver gives a session (realize.ts sandboxName). */
+  sandboxName(agentGroupId: string, sessionId: string): string;
+  /** The ncl change log (data/openshell-policy/changes.jsonl). */
+  changeLog: string;
   decisionLog: string;
   staticDir: string;
   now?: () => Date;
@@ -149,6 +164,27 @@ function policyData(r: DispatchResult): { output: string; note?: string; proposa
   };
 }
 
+/** The ncl change log, parsed leniently (torn / foreign lines skipped). */
+function readChangeLog(file: string): ChangeRecord[] {
+  let text: string;
+  try {
+    text = fs.readFileSync(file, 'utf8');
+  } catch {
+    return [];
+  }
+  const out: ChangeRecord[] = [];
+  for (const line of text.split('\n')) {
+    if (!line.trim()) continue;
+    try {
+      const r = JSON.parse(line) as ChangeRecord;
+      if (r && typeof r.verb === 'string' && typeof r.ts === 'string') out.push(r);
+    } catch {
+      // skip
+    }
+  }
+  return out;
+}
+
 const STATIC: Record<string, { file: string; type: string }> = {
   '/': { file: 'index.html', type: 'text/html; charset=utf-8' },
   '/index.html': { file: 'index.html', type: 'text/html; charset=utf-8' },
@@ -157,6 +193,28 @@ const STATIC: Record<string, { file: string; type: string }> = {
 
 export function createHandler(deps: UiDeps): (req: IncomingMessage, res: ServerResponse) => Promise<void> {
   const now = deps.now ?? (() => new Date());
+
+  async function findGroup(id: string | null): Promise<GroupSummary> {
+    if (!id) throw new HttpError(400, 'An agent group is required (?group=<id>)');
+    const group = (await deps.listGroups()).find((g) => g.id === id);
+    if (!group) throw new HttpError(404, `agent group not found: ${id}`);
+    return group;
+  }
+
+  async function candidates(group: GroupSummary) {
+    const sessions = await deps.groupSessions(group.id);
+    return {
+      live: sandboxCandidates(sessions, (sessionId) => deps.sandboxName(group.id, sessionId)),
+      all: new Set(sessions.map((s) => deps.sandboxName(group.id, s.id))),
+    };
+  }
+
+  /** An ncl call on the group's behalf; a refusal is the client's (400), with ncl's reason. */
+  async function ncl(command: string, args: Record<string, unknown>, secrets: string[] = []): Promise<unknown> {
+    const r = await deps.dispatchNcl({ command, args });
+    if (!r.ok) throw new HttpError(400, scrub(r.error?.message ?? `${command} failed`, secrets));
+    return r.data;
+  }
 
   /** Shipped + custom templates; custom ones unavailable (e.g. no DB yet) degrade to shipped only, with the reason. */
   async function templates(): Promise<{ templates: ProfileTemplate[]; customError?: string }> {
@@ -172,6 +230,8 @@ export function createHandler(deps: UiDeps): (req: IncomingMessage, res: ServerR
       decision === 'approved'
         ? policyApproveFrame(body.sandbox, body.chunkId)
         : policyRejectFrame(body.sandbox, body.chunkId, body.reason);
+    // From a group tab: record the group too, so its audit log finds the decision.
+    const group = body.group !== undefined && body.group !== '' ? await findGroup(String(body.group)) : undefined;
     const result = await deps.dispatchPolicy(frame);
     const sandbox = String(frame.args.sandbox);
     const chunkId = String(frame.args.chunk_id);
@@ -184,6 +244,7 @@ export function createHandler(deps: UiDeps): (req: IncomingMessage, res: ServerR
       ok: result.ok,
       ...(result.ok ? {} : { error: result.error?.message ?? 'unknown error' }),
       actor: ACTOR,
+      ...(group ? { group: { id: group.id, folder: group.folder } } : {}),
     });
     return {
       status: result.ok ? 200 : 502,
@@ -222,6 +283,146 @@ export function createHandler(deps: UiDeps): (req: IncomingMessage, res: ServerR
         credential: { credentials: cred.credentials, ...parseCredentialSource(cred.credentialSource) },
         providerTypes: t.templates,
         ...(t.customError ? { customProfilesError: t.customError } : {}),
+      });
+      return;
+    }
+
+    // ---- per-agent-group tabs -------------------------------------------------
+    if (method === 'GET' && url.pathname === '/api/groups') {
+      send(res, 200, { groups: await deps.listGroups() });
+      return;
+    }
+
+    if (url.pathname === '/api/groups/providers') {
+      if (method === 'GET') {
+        const group = await findGroup(url.searchParams.get('group'));
+        send(res, 200, { group, ...((await ncl('openshell-provider-list', { group: group.id })) as object) });
+        return;
+      }
+      if (method === 'POST') {
+        const body = await readJson(req);
+        const group = await findGroup(String(body.group ?? ''));
+        const credentials = Object.fromEntries(
+          keyValues(body.credentials, 'credentials').map((c) => [c.key.trim(), c.value]),
+        );
+        const config = Object.fromEntries(keyValues(body.config, 'config').map((c) => [c.key.trim(), c.value]));
+        const type = String(body.type ?? '').trim();
+        const secrets = Object.values(credentials);
+        const data = await ncl(
+          'openshell-provider-attach',
+          {
+            group: group.id,
+            openshell_provider: String(body.name ?? ''),
+            ...(type ? { type } : {}),
+            ...(Object.keys(credentials).length ? { credentials } : {}),
+            ...(Object.keys(config).length ? { config } : {}),
+          },
+          secrets,
+        );
+        send(res, 200, { ok: true, group, ...(data as object) });
+        return;
+      }
+      if (method === 'DELETE') {
+        const group = await findGroup(url.searchParams.get('group'));
+        const data = await ncl('openshell-provider-detach', {
+          group: group.id,
+          openshell_provider: url.searchParams.get('name') ?? '',
+        });
+        send(res, 200, { ok: true, group, ...(data as object) });
+        return;
+      }
+    }
+
+    if (url.pathname === '/api/groups/network') {
+      if (method === 'GET') {
+        const group = await findGroup(url.searchParams.get('group'));
+        send(res, 200, { group, ...((await ncl('openshell-network-list', { group: group.id })) as object) });
+        return;
+      }
+      if (method === 'POST') {
+        const body = await readJson(req);
+        const group = await findGroup(String(body.group ?? ''));
+        const binaries = Array.isArray(body.binaries) ? body.binaries.map(String) : [String(body.binaries ?? '')];
+        const data = await ncl('openshell-network-add', {
+          group: group.id,
+          name: String(body.name ?? ''),
+          host: String(body.host ?? ''),
+          ports: Array.isArray(body.ports) ? body.ports.join(',') : String(body.ports ?? ''),
+          binary: JSON.stringify(binaries.map((b: string) => b.trim()).filter(Boolean)),
+        });
+        send(res, 200, { ok: true, group, ...(data as object) });
+        return;
+      }
+      if (method === 'DELETE') {
+        const group = await findGroup(url.searchParams.get('group'));
+        const data = await ncl('openshell-network-remove', {
+          group: group.id,
+          name: url.searchParams.get('name') ?? '',
+        });
+        send(res, 200, { ok: true, group, ...(data as object) });
+        return;
+      }
+    }
+
+    if (method === 'GET' && url.pathname === '/api/groups/policy') {
+      const group = await findGroup(url.searchParams.get('group'));
+      const { live } = await candidates(group);
+      const requested = url.searchParams.get('sandbox')?.trim();
+      const chosen = requested ? live.find((c) => c.sandbox === requested) : live[0];
+      if (requested && !chosen)
+        throw new HttpError(400, `sandbox ${requested} is not a live sandbox of ${group.folder}`);
+      if (!chosen) {
+        send(res, 200, {
+          ok: true,
+          group,
+          sandbox: null,
+          sandboxes: [],
+          chunks: [],
+          note: `${group.folder} has no live session, so no sandbox to review.`,
+        });
+        return;
+      }
+      const frame = input(() => policyListFrame(chosen.sandbox, url.searchParams.get('status') || 'pending'));
+      const result = await deps.dispatchPolicy(frame);
+      const data = policyData(result);
+      send(res, result.ok ? 200 : 502, {
+        ok: result.ok,
+        group,
+        sandbox: chosen.sandbox,
+        sandboxes: live,
+        status: frame.args.status,
+        ...data,
+        chunks: parseRuleChunks(data.output),
+        ...(result.ok ? {} : { error: result.error?.message }),
+      });
+      return;
+    }
+
+    if (method === 'GET' && url.pathname === '/api/groups/audit') {
+      const group = await findGroup(url.searchParams.get('group'));
+      const { live, all } = await candidates(group);
+      const decisions = readDecisions(deps.decisionLog);
+      // OpenShell's own approved/rejected listing for the default sandbox, as /api/history does.
+      let remote: ReturnType<typeof mergeHistory> | undefined;
+      let remoteError: string | undefined;
+      if (live[0]) {
+        const sandbox = live[0].sandbox;
+        const [approved, rejected] = await Promise.all(
+          (['approved', 'rejected'] as const).map((st) => deps.dispatchPolicy(policyListFrame(sandbox, st))),
+        );
+        if (approved.ok && rejected.ok) {
+          remote = mergeHistory(decisions, {
+            sandbox,
+            approved: parseRuleChunks(policyData(approved).output),
+            rejected: parseRuleChunks(policyData(rejected).output),
+          });
+        } else remoteError = (approved.ok ? rejected : approved).error?.message ?? 'OpenShell listing failed';
+      }
+      send(res, 200, {
+        group,
+        logs: { changes: deps.changeLog, decisions: deps.decisionLog },
+        entries: groupAudit({ group, sandboxes: all, changes: readChangeLog(deps.changeLog), decisions, remote }),
+        ...(remoteError ? { remoteError } : {}),
       });
       return;
     }

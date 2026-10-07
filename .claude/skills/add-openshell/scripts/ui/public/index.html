@@ -27,15 +27,20 @@
   table { border-collapse: collapse; width: 100%; font-size: .85rem; margin-top: .5rem; }
   th, td { text-align: left; border-bottom: 1px solid #eee; padding: .35rem .3rem; vertical-align: top; }
   .badge { display: inline-block; padding: .05rem .4rem; border-radius: 3px; background: #eee; font-size: .78rem; }
+  .tabs { display: flex; gap: .25rem; margin: 1rem 0 0; }
+  .tabs button { margin: 0; border-radius: 6px 6px 0 0; background: #fff; color: #222; border-color: #ccc; }
+  .tabs button[aria-selected=true] { background: #222; color: #fff; }
+  .tabpanel { margin-top: 0; border-top-left-radius: 0; }
+  .badge.applied, .badge.approved { background: #dcefdc; } .badge.rejected, .badge.failed { background: #f6d6d6; }
 </style>
 </head>
 <body>
 <h1>NanoClaw · OpenShell setup</h1>
-<p class="sub">Operator console for this install. Every action runs the existing <code>openshell</code> / <code>ncl openshell-policy</code> commands; their output is shown as-is.</p>
+<p class="sub">Operator console for this install. Every action runs the existing <code>openshell</code> / <code>ncl</code> commands; their output is shown as-is.</p>
 
 <section id="credential">
-  <h2>1 · Claude credential</h2>
-  <p class="hint">Stored in this install's systemd drop-in for the OpenShell model relay (never in <code>.env</code>). Confirmation is read back from the service environment the relay uses.</p>
+  <h2>Claude credential <span class="badge">install-wide</span></h2>
+  <p class="hint">One credential for the whole install: the OpenShell model relay reads it from this install's service environment (systemd drop-in or LaunchAgent plist), never from <code>.env</code>. Confirmation is read back from where the relay reads it.</p>
   <div id="cred-status" class="hint">Checking…</div>
   <label for="cred-kind">Credential type</label>
   <select id="cred-kind">
@@ -48,21 +53,48 @@
   <div id="cred-result"></div>
 </section>
 
-<section id="providers">
-  <h2>2 · OpenShell provider</h2>
+<section id="group">
+  <h2>Agent group</h2>
+  <select id="group-select"><option value="">Loading…</option></select>
+  <p class="hint">Providers and network paths belong to the group: every sandbox it gets from now on is created with them. A running sandbox keeps what it started with.</p>
+</section>
+
+<nav class="tabs" role="tablist">
+  <button role="tab" data-tab="providers" aria-selected="true">Providers</button>
+  <button role="tab" data-tab="network" aria-selected="false">Network paths</button>
+  <button role="tab" data-tab="approvals" aria-selected="false">Pending approvals</button>
+  <button role="tab" data-tab="audit" aria-selected="false">Audit log</button>
+</nav>
+
+<section id="tab-providers" class="tabpanel" role="tabpanel">
+  <h2>OpenShell providers for this group</h2>
+  <div id="prov-attached"></div>
+  <h2>Attach a provider</h2>
   <label for="prov-name">Provider name</label>
-  <input id="prov-name" type="text" placeholder="e.g. anthropic-main">
-  <label for="prov-type">Type (profile id)</label>
+  <input id="prov-name" type="text" placeholder="e.g. github-alice">
+  <label for="prov-type">Create it in the gateway as</label>
   <select id="prov-type"></select>
   <div id="prov-custom-wrap" hidden>
-    <label for="prov-custom">Custom profile id</label>
-    <input id="prov-custom" type="text" placeholder="an imported profile's id">
+    <label for="prov-custom">Type id</label>
+    <input id="prov-custom" type="text" placeholder="a profile imported into the gateway">
   </div>
   <p id="prov-type-hint" class="hint"></p>
+  <div id="prov-create-fields">
+    <label>Credentials <span class="hint">(env-var name + value; values go only to the OpenShell gateway)</span></label>
+    <div id="prov-creds"></div>
+    <button class="secondary" id="prov-add-cred" type="button">+ credential</button>
+    <label>Config <span class="hint">(KEY=VALUE, optional)</span></label>
+    <div id="prov-config"></div>
+    <button class="secondary" id="prov-add-config" type="button">+ config</button>
+  </div>
+  <div>
+    <button id="prov-attach">Attach to group</button>
+    <button class="secondary" id="prov-list">List gateway providers</button>
+  </div>
   <p id="profile-error" class="bad"></p>
   <button class="secondary" id="profile-delete" type="button" hidden>Delete this custom profile</button>
   <details id="profile-new">
-    <summary>Save a custom provider profile (template)</summary>
+    <summary>Save a custom provider profile (template, install-wide)</summary>
     <p class="hint">A hint for this form only: the OpenShell gateway still decides whether the type exists (import its profile with <code>openshell provider profile import</code>). No credential values are saved — names only.</p>
     <label for="profile-id">Profile id</label><input id="profile-id" type="text" placeholder="acme-crm">
     <label for="profile-label">Label</label><input id="profile-label" type="text" placeholder="ACME CRM">
@@ -71,39 +103,37 @@
     <label for="profile-config">Config keys <span class="hint">(comma-separated)</span></label><input id="profile-config" type="text" placeholder="region">
     <div><button class="secondary" id="profile-save" type="button">Save profile</button></div>
   </details>
-  <label>Credentials <span class="hint">(--credential; env-var name + value)</span></label>
-  <div id="prov-creds"></div>
-  <button class="secondary" id="prov-add-cred" type="button">+ credential</button>
-  <label>Config <span class="hint">(--config KEY=VALUE, optional)</span></label>
-  <div id="prov-config"></div>
-  <button class="secondary" id="prov-add-config" type="button">+ config</button>
-  <label><input id="prov-global" type="checkbox"> --global-profile</label>
-  <div>
-    <button id="prov-create">Create provider</button>
-    <button class="secondary" id="prov-list">List providers</button>
-  </div>
   <div id="prov-result"></div>
 </section>
 
-<section id="policy">
-  <h2>3 · Egress-policy proposals</h2>
-  <p class="hint">Rule proposals cover network egress only; filesystem and process policy is fixed at sandbox start.</p>
-  <label for="pol-sandbox">Sandbox name</label>
-  <input id="pol-sandbox" type="text" placeholder="ncl-0123abcd (from `openshell sandbox list`)">
-  <label for="pol-status">Show</label>
-  <select id="pol-status"><option>pending</option><option>approved</option><option>rejected</option></select>
-  <div>
-    <button id="pol-list">List proposals</button>
-    <button class="secondary" id="pol-view">Current policy (JSON)</button>
-  </div>
-  <div id="pol-result"></div>
+<section id="tab-network" class="tabpanel" role="tabpanel" hidden>
+  <h2>Network paths for this group</h2>
+  <p class="hint">Raw egress rules, independent of any provider: host, port(s), and the binaries allowed to connect.</p>
+  <div id="net-list"></div>
+  <label for="net-name">Rule name</label><input id="net-name" type="text" placeholder="crm_api">
+  <label for="net-host">Host</label><input id="net-host" type="text" placeholder="api.example.com">
+  <label for="net-ports">Port(s)</label><input id="net-ports" type="text" placeholder="443 or 443,8443">
+  <label for="net-binaries">Binaries <span class="hint">(absolute paths, comma-separated)</span></label><input id="net-binaries" type="text" placeholder="/usr/local/bin/node">
+  <div><button id="net-add">Add network path</button></div>
+  <div id="net-result"></div>
 </section>
 
-<section id="history">
-  <h2>4 · Decision history</h2>
-  <p class="hint">This UI's own append-only log, plus (for the sandbox above) decisions OpenShell reports that the log has no record of.</p>
-  <button class="secondary" id="hist-load">Load history</button>
-  <div id="hist-result"></div>
+<section id="tab-approvals" class="tabpanel" role="tabpanel" hidden>
+  <h2>Pending approvals</h2>
+  <p class="hint">Egress-rule proposals of one of the group's live sandboxes — by default the newest running one. Proposals cover network egress only.</p>
+  <label for="appr-sandbox">Sandbox</label>
+  <select id="appr-sandbox"><option value="">(default)</option></select>
+  <label for="appr-status">Show</label>
+  <select id="appr-status"><option>pending</option><option>approved</option><option>rejected</option></select>
+  <div><button id="appr-load">Load</button></div>
+  <div id="appr-result"></div>
+</section>
+
+<section id="tab-audit" class="tabpanel" role="tabpanel" hidden>
+  <h2>Audit log</h2>
+  <p class="hint">This group's provider, network-path and policy changes (ncl change log) and approve/reject decisions (this UI's decision log, plus ones OpenShell reports for its default sandbox), approved and denied alike.</p>
+  <div><button class="secondary" id="audit-load">Load audit log</button></div>
+  <div id="audit-result"></div>
 </section>
 
 <script src="/app.js"></script>
