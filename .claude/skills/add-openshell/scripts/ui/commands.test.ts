@@ -2,16 +2,24 @@ import { describe, expect, it } from 'vitest';
 
 import {
   CREDENTIAL_INPUT_VARS,
+  MAX_PROFILE_YAML,
   credentialScriptArgs,
   credentialScriptEnv,
+  groupProvidersFrame,
   missingDeclaredCredentials,
   parseCredentialSource,
   parseRuleChunks,
+  policyAddRuleFrame,
+  policyApplyPresetFrame,
   policyApproveFrame,
   policyListFrame,
   policyRejectFrame,
   policyViewFrame,
+  profileImportFrame,
+  profileListFrame,
+  providerAttachFrame,
   providerCreateInvocation,
+  providerDetachFrame,
   providerGetArgs,
   providerListArgs,
 } from './commands.js';
@@ -269,5 +277,65 @@ describe('parseRuleChunks (openshell rule get text)', () => {
   it('an empty listing parses to nothing', () => {
     expect(parseRuleChunks("No network rules for sandbox 'ncl-abc'\n")).toEqual([]);
     expect(parseRuleChunks('')).toEqual([]);
+  });
+});
+
+describe('openshell-provider frames', () => {
+  it('group list / attach / detach', () => {
+    expect(groupProvidersFrame('ag-1')).toEqual({ command: 'openshell-provider-list', args: { group: 'ag-1' } });
+    expect(providerAttachFrame(' main ', ' granola ')).toEqual({
+      command: 'openshell-provider-attach',
+      args: { group: 'main', provider: 'granola' },
+    });
+    expect(providerDetachFrame('ag-1', 'granola').command).toBe('openshell-provider-detach');
+  });
+
+  it('refuses a missing group or a provider name the CLI could misread', () => {
+    expect(() => groupProvidersFrame('')).toThrow(/agent group is required/);
+    expect(() => providerAttachFrame('ag-1', '--global')).toThrow(/Provider name/);
+    expect(() => providerDetachFrame('ag-1', '')).toThrow(/Provider name/);
+  });
+
+  it('profile list / import (pasted or uploaded YAML text, optional --global)', () => {
+    expect(profileListFrame()).toEqual({ command: 'openshell-provider-profile-list', args: { output: 'table' } });
+    expect(profileImportFrame('id: granola\n', false)).toEqual({
+      command: 'openshell-provider-profile-import',
+      args: { yaml: 'id: granola\n' },
+    });
+    expect(profileImportFrame('id: granola\n', true).args).toMatchObject({ global: true });
+    expect(() => profileImportFrame('   ', false)).toThrow(/Paste or upload/);
+    expect(() => profileImportFrame('x'.repeat(MAX_PROFILE_YAML + 1), false)).toThrow(/larger than/);
+  });
+});
+
+describe('network-path frames', () => {
+  it('add-rule carries only the given fields', () => {
+    expect(
+      policyAddRuleFrame('ncl-abc', { addEndpoint: ' api.example.com:443 ', binary: '/usr/bin/curl', ruleName: '' }),
+    ).toEqual({
+      command: 'openshell-policy-add-rule',
+      args: { sandbox: 'ncl-abc', add_endpoint: 'api.example.com:443', binary: '/usr/bin/curl' },
+    });
+    expect(policyAddRuleFrame('ncl-abc', { removeRule: 'old', dryRun: true, anyBinary: true }).args).toEqual({
+      sandbox: 'ncl-abc',
+      remove_rule: 'old',
+      any_binary: true,
+      dry_run: true,
+    });
+  });
+
+  it('add-rule refuses an edit that changes nothing, newlines, and a missing sandbox', () => {
+    expect(() => policyAddRuleFrame('ncl-abc', { binary: '/x' })).toThrow(/Give an endpoint/);
+    expect(() => policyAddRuleFrame('ncl-abc', { addEndpoint: 'a:1\nb' })).toThrow(/newlines/);
+    expect(() => policyAddRuleFrame('', { addEndpoint: 'a:1' })).toThrow(/sandbox/);
+  });
+
+  it('apply-preset', () => {
+    expect(policyApplyPresetFrame('ncl-abc', 'github', true)).toEqual({
+      command: 'openshell-policy-apply-preset',
+      args: { sandbox: 'ncl-abc', preset: 'github', dry_run: true },
+    });
+    expect(policyApplyPresetFrame('ncl-abc', 'github', false).args).not.toHaveProperty('dry_run');
+    expect(() => policyApplyPresetFrame('ncl-abc', '../etc', false)).toThrow(/preset name/);
   });
 });

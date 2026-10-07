@@ -42,6 +42,14 @@ export interface ContainerConfigRow {
    * and `SELECT *` rows surface it here. Absent means the default tier.
    */
   runtime_tier?: string | null;
+  /**
+   * JSON string[]: OpenShell provider instance names attached to this group
+   * (migration 026, default '[]'). Every OpenShell sandbox created for the
+   * group gets one `--provider <name>` per entry. Optional on the TS type so
+   * row constructors that predate the column need not supply it; read it via
+   * `getGroupOpenShellProviders`.
+   */
+  openshell_providers?: string;
   updated_at: string;
 }
 

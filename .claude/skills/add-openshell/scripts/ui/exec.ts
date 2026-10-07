@@ -10,6 +10,12 @@
  *    dispatcher as the host caller — exactly what the repo's CLI tests do. No
  *    `ncl`/pnpm subprocess (and so no stray-`--` argv problem), and no need
  *    for the host to be running: with --sandbox these commands touch no DB.
+ *  - `ncl openshell-provider-*`, the group selector and the audit's session →
+ *    sandbox mapping: the same in-process dispatch, but these read and write
+ *    the central DB (the per-group provider list lives in container_configs).
+ *    The DB is opened lazily, in the `tool` role the repo's own scripts use
+ *    (scripts/q.ts), only when one of those is first called. The host stays
+ *    the only process that runs migrations.
  *  - credential: the skill's `scripts/auth.ts claude`, as a child `node`
  *    process with tsx's loader (no pnpm on the service PATH required).
  */
@@ -18,10 +24,15 @@ import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
+import { CENTRAL_DB_PATH, DATA_DIR, INSTALL_SLUG } from '../../../../../src/config.js';
 import { openShellGatewayEnv, openShellSettingsEnv } from '../../../../../src/drivers/openshell/config.js';
+import { listPresets } from '../../../../../src/drivers/openshell/preset-registry.js';
+import { sandboxName } from '../../../../../src/drivers/openshell/realize.js';
 import { settingsFromEnv } from '../../../../../src/drivers/openshell/settings.js';
 import { readEnvFile } from '../../../../../src/env.js';
-import { credentialScriptArgs, type PolicyFrame } from './commands.js';
+import fs from 'node:fs';
+
+import { credentialScriptArgs, type NclFrame, type PolicyFrame } from './commands.js';
 import type { DispatchResult, ExecResult, UiDeps } from './routes.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -70,20 +81,45 @@ export function openShellChildEnv(
   return { ...base, ...openShellGatewayEnv(settingsEnv), ...extra, OPENSHELL_COLOR: 'never', NO_COLOR: '1' };
 }
 
-let policyDispatch: ((frame: PolicyFrame) => Promise<DispatchResult>) | undefined;
+let nclDispatch: ((frame: NclFrame) => Promise<DispatchResult>) | undefined;
 
-async function loadPolicyDispatch(): Promise<(frame: PolicyFrame) => Promise<DispatchResult>> {
-  if (!policyDispatch) {
-    // Registers only the openshell-policy-* commands; dispatch() applies the
-    // same guard / arg validation `ncl` gets over the socket.
+async function loadDispatch(): Promise<(frame: NclFrame) => Promise<DispatchResult>> {
+  if (!nclDispatch) {
+    // Registers only the openshell-policy-* and openshell-provider-* commands;
+    // dispatch() applies the same guard / arg validation `ncl` gets over the socket.
     await import('../../../../../src/cli/resources/openshell-policy.js');
+    await import('../../../../../src/cli/resources/openshell-provider.js');
     const { dispatch } = await import('../../../../../src/cli/dispatch.js');
-    policyDispatch = async (frame) => {
+    nclDispatch = async (frame) => {
       const res = await dispatch({ id: randomUUID(), command: frame.command, args: frame.args }, { caller: 'host' });
       return res.ok ? { ok: true, data: res.data } : { ok: false, error: res.error };
     };
   }
-  return policyDispatch;
+  return nclDispatch;
+}
+
+let dbReady: Promise<void> | undefined;
+
+/** Open the central DB once, as a tool (no migrations — the host owns those). */
+function ensureCentralDb(): Promise<void> {
+  if (!dbReady) {
+    dbReady = (async () => {
+      if (!fs.existsSync(CENTRAL_DB_PATH))
+        throw new Error(`NanoClaw's central DB is not at ${CENTRAL_DB_PATH}; finish setup (or start the host) first.`);
+      const { initDb } = await import('../../../../../src/db/connection.js');
+      await initDb(CENTRAL_DB_PATH, { role: 'tool' });
+    })();
+    // A failed open is retried on the next request, not cached forever.
+    dbReady.catch(() => {
+      dbReady = undefined;
+    });
+  }
+  return dbReady;
+}
+
+async function withDb<T>(run: () => Promise<T>): Promise<T> {
+  await ensureCentralDb();
+  return run();
 }
 
 export function realDeps(projectRoot: string = PROJECT_ROOT, run: ExecFileLike = execFile): UiDeps {
@@ -98,8 +134,33 @@ export function realDeps(projectRoot: string = PROJECT_ROOT, run: ExecFileLike =
       }
       return execCapture(run, bin, args, { env: openShellChildEnv(env, process.env, settingsEnv), cwd: projectRoot });
     },
-    async dispatchPolicy(frame) {
-      return (await loadPolicyDispatch())(frame);
+    async dispatchPolicy(frame: PolicyFrame) {
+      return (await loadDispatch())(frame);
+    },
+    async dispatchProvider(frame) {
+      try {
+        await ensureCentralDb();
+      } catch (err) {
+        return { ok: false, error: { code: 'db-unavailable', message: (err as Error).message } };
+      }
+      return (await loadDispatch())(frame);
+    },
+    listGroups() {
+      return withDb(async () => {
+        const { getAllAgentGroups } = await import('../../../../../src/db/agent-groups.js');
+        return (await getAllAgentGroups()).map((g) => ({ id: g.id, name: g.name, folder: g.folder }));
+      });
+    },
+    groupSandboxNames(groupId) {
+      return withDb(async () => {
+        const { getSessionsByAgentGroup } = await import('../../../../../src/db/sessions.js');
+        return (await getSessionsByAgentGroup(groupId)).map((s) =>
+          sandboxName({ installSlug: INSTALL_SLUG, agentGroupId: groupId, sessionId: s.id }),
+        );
+      });
+    },
+    listPresets() {
+      return listPresets().map((p) => ({ name: p.name, version: p.version, description: p.description }));
     },
     runCredentialScript(env) {
       return execCapture(run, process.execPath, credentialScriptArgs(tsxLoaderUrl(projectRoot), AUTH_SCRIPT), {
@@ -119,6 +180,9 @@ export function realDeps(projectRoot: string = PROJECT_ROOT, run: ExecFileLike =
       ).toLowerCase();
     },
     decisionLog: path.join(projectRoot, 'data', 'openshell-setup-ui', 'decisions.jsonl'),
+    // Where the resources themselves write (src/config.ts DATA_DIR = <project>/data).
+    policyChangeLog: path.join(DATA_DIR, 'openshell-policy', 'changes.jsonl'),
+    providerChangeLog: path.join(DATA_DIR, 'openshell-provider', 'changes.jsonl'),
     staticDir: STATIC_DIR,
   };
 }

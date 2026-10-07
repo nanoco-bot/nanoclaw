@@ -38,6 +38,7 @@ import {
 } from './policy.js';
 import { policyOptionsFor } from './group-policy.js';
 import { assertHostMounts, type Lstat } from './host-mount.js';
+import { isProviderName } from './provider-commands.js';
 import {
   createArgs,
   handleStatus,
@@ -90,6 +91,14 @@ export interface OpenShellDriverOptions extends MountPolicy {
    * `nanoclaw-group-folder` label), merged over `policy` — see group-policy.ts.
    */
   groupPolicy?: Record<string, PolicyOptions>;
+  /**
+   * The OpenShell provider instances attached to a session's agent group,
+   * passed as one `--provider` each to `sandbox create`. Resolved at
+   * prepare(), so every new sandbox for the group is born with them. Absent =
+   * no providers (provider-less sandboxes). register.ts wires this to the
+   * per-group `container_configs.openshell_providers` list.
+   */
+  providersFor?: (key: SessionKey) => Promise<readonly string[]>;
   /** Watch poll interval. Default 2000ms. */
   pollIntervalMs?: number;
   /** Where the transient policy file is written for `--policy`. Default os.tmpdir(). */
@@ -133,6 +142,7 @@ interface PendingRealization {
   spec: SessionSpec;
   policy: CompiledPolicy;
   driverConfig: DriverConfig | null;
+  providers: readonly string[];
 }
 
 export class OpenShellSessionDriver implements SessionDriver {
@@ -227,6 +237,7 @@ export class OpenShellSessionDriver implements SessionDriver {
       spec,
       policy: compilePolicy(spec, agent, policyOptionsFor(spec, this.#opts.policy ?? {}, this.#opts.groupPolicy)),
       driverConfig: compileDriverConfig(agent),
+      providers: await this.#providersFor(spec.key),
     };
     // The bind list and the Landlock policy must agree on every mount's access.
     assertDriverConfigMatchesPolicy(pending.policy, pending.driverConfig);
@@ -314,6 +325,32 @@ export class OpenShellSessionDriver implements SessionDriver {
   }
 
   // ---------- internals ----------
+
+  /**
+   * The group's attached providers, validated. A name that is not a legal
+   * provider name is refused (spec-invalid), never passed on or dropped: the
+   * operator attached it, so silently creating the sandbox without it would
+   * hide the problem. A lookup that fails (central DB unavailable) is
+   * retryable — never "no providers".
+   */
+  async #providersFor(key: SessionKey): Promise<readonly string[]> {
+    if (!this.#opts.providersFor) return [];
+    let providers: readonly string[];
+    try {
+      providers = await this.#opts.providersFor(key);
+    } catch (err) {
+      this.#log.warn("Could not read the agent group's OpenShell providers", {
+        agentGroupId: key.agentGroupId,
+        err: err instanceof Error ? err.message : String(err),
+      });
+      throw asFailureError({ kind: 'runtime-unavailable', retryable: true });
+    }
+    const bad = providers.filter((p) => !isProviderName(p));
+    if (bad.length > 0) {
+      throw specInvalid(`agent group has invalid OpenShell provider name(s) attached: ${bad.join(', ')}`);
+    }
+    return [...new Set(providers)];
+  }
 
   /** Paginated `sandbox list --selector`. */
   async #list(selector: string): Promise<OpenShellSandboxDoc[]> {
@@ -475,13 +512,13 @@ class OpenShellHandle implements SessionHandle {
   async start(): Promise<void> {
     if (this.#started || !this.pending) return; // idempotent; an adopted session is already running
     this.#started = true;
-    const { spec, policy, driverConfig } = this.pending;
+    const { spec, policy, driverConfig, providers } = this.pending;
     const agent = spec.containers.find((c) => c.role === 'agent')!;
     const dir = await fs.mkdtemp(path.join(this.tmpDir ?? os.tmpdir(), 'nanoclaw-openshell-'));
     const policyPath = path.join(dir, 'policy.yaml');
     try {
       await fs.writeFile(policyPath, renderPolicyYaml(policy), { mode: 0o600 });
-      await this.cli.run(createArgs({ spec, container: agent, name: this.name, policyPath, driverConfig }));
+      await this.cli.run(createArgs({ spec, container: agent, name: this.name, policyPath, driverConfig, providers }));
     } catch (err) {
       this.log.warn('OpenShell sandbox create failed', {
         name: this.name,

@@ -22,6 +22,17 @@ import { settingsFromEnv } from './settings.js';
 
 export const OPENSHELL_DRIVER_KIND = 'openshell';
 
+/**
+ * The per-agent-group provider list (`container_configs.openshell_providers`,
+ * managed by `ncl openshell-provider attach|detach`). Imported lazily: the
+ * driver barrel must not pull the DB layer in at import time, and the central
+ * DB is initialized before any session is prepared.
+ */
+export async function groupProvidersFromDb(key: { agentGroupId: string }): Promise<string[]> {
+  const { getGroupOpenShellProviders } = await import('../../db/container-configs.js');
+  return getGroupOpenShellProviders(key.agentGroupId);
+}
+
 registerSessionDriver(OPENSHELL_DRIVER_KIND, (policy) => {
   // Read at selection time, not import time: an install that never selects
   // this driver never parses (or fails on) its settings.
@@ -32,6 +43,7 @@ registerSessionDriver(OPENSHELL_DRIVER_KIND, (policy) => {
     cli: realOpenShellCli(settings.bin, openShellGatewayEnv(settingsEnv)),
     policy: settings.policy,
     ...(settings.groupPolicy ? { groupPolicy: settings.groupPolicy } : {}),
+    providersFor: groupProvidersFromDb,
     ...(settings.pollIntervalMs ? { pollIntervalMs: settings.pollIntervalMs } : {}),
   });
 });

@@ -173,6 +173,8 @@ describe('start()', () => {
     expect(flagValues('--cpu')).toEqual(['1.5']);
     expect(flagValues('--memory')).toEqual(['1024Mi']);
     expect(args).toEqual(expect.arrayContaining(['--detach', '--no-tty', '--no-auto-providers']));
+    // No providersFor wired: a provider-less sandbox, exactly as before per-group providers existed.
+    expect(args).not.toContain('--provider');
     expect(args.slice(args.indexOf('--'))).toEqual(['--', 'bash', '-c', 'exec bun run /app/src/index.ts']);
 
     expect(parseYaml(policyAtCreate)).toEqual({
@@ -216,6 +218,65 @@ describe('start()', () => {
     const handle = await driver.prepare(fixtureSpec());
     await expect(handle.start()).rejects.toThrow();
     expect(cli.callsMatching(/^sandbox delete/)).toEqual([]);
+  });
+});
+
+describe('per-group providers reach every new sandbox (providersFor)', () => {
+  function setupWithProviders(providersFor: (key: SessionKey) => Promise<readonly string[]>) {
+    const cli = new FakeOpenShellCli();
+    cli.rules = [
+      { match: /^sandbox get /, fails: NOT_FOUND },
+      { match: /^sandbox create /, stdout: sandboxJson({ name: NAME, phase: 'Ready', labels: OWN_LABELS }) },
+    ];
+    const driver = new OpenShellSessionDriver({ ...FIXTURE_POLICY, cli, logger: quietLogger, providersFor });
+    return { cli, driver };
+  }
+
+  it("emits one --provider per provider attached to the session's group, looked up by the session key", async () => {
+    const seen: SessionKey[] = [];
+    const { cli, driver } = setupWithProviders(async (key) => {
+      seen.push(key);
+      return ['granola', 'github-main'];
+    });
+    const handle = await driver.prepare(fixtureSpec());
+    await handle.start();
+    expect(seen).toEqual([KEY]);
+    const args = cli.callsMatching(/^sandbox create/)[0];
+    const flagValues = args.flatMap((a, i) => (a === '--provider' ? [args[i + 1]] : []));
+    expect(flagValues).toEqual(['granola', 'github-main']);
+    // Still never auto-created from local credentials: a missing provider fails the create.
+    expect(args).toContain('--no-auto-providers');
+    // Provider flags are create options, so they precede the `--` command separator.
+    expect(args.lastIndexOf('--provider')).toBeLessThan(args.indexOf('--'));
+  });
+
+  it('a group with no attached providers gets a provider-less sandbox', async () => {
+    const { cli, driver } = setupWithProviders(async () => []);
+    await (await driver.prepare(fixtureSpec())).start();
+    expect(cli.callsMatching(/^sandbox create/)[0]).not.toContain('--provider');
+  });
+
+  it('every new session of the group is born with the providers (not only the first)', async () => {
+    const { cli, driver } = setupWithProviders(async () => ['granola']);
+    await (await driver.prepare(fixtureSpec())).start();
+    await (await driver.prepare(fixtureSpec({ key: { ...KEY, sessionId: 's2' } }))).start();
+    const creates = cli.callsMatching(/^sandbox create/);
+    expect(creates).toHaveLength(2);
+    for (const args of creates) expect(args.join(' ')).toContain('--provider granola');
+  });
+
+  it('refuses an invalid stored provider name at prepare, before anything is allocated', async () => {
+    const { cli, driver } = setupWithProviders(async () => ['--evil']);
+    await expect(driver.prepare(fixtureSpec())).rejects.toThrow(/spec-invalid: .*invalid OpenShell provider name/);
+    expect(cli.calls).toEqual([]);
+  });
+
+  it('a failed lookup is retryable runtime-unavailable, never a silently provider-less sandbox', async () => {
+    const { cli, driver } = setupWithProviders(async () => {
+      throw new Error('Database not initialized');
+    });
+    await expect(driver.prepare(fixtureSpec())).rejects.toMatchObject({ kind: 'runtime-unavailable', retryable: true });
+    expect(cli.callsMatching(/^sandbox create/)).toEqual([]);
   });
 });
 

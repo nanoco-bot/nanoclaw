@@ -206,6 +206,110 @@ export function policyViewFrame(sandbox: unknown): PolicyFrame {
   return { command: 'openshell-policy-view', args: { sandbox: sandboxArg(sandbox), output: 'json' } };
 }
 
+export interface AddRuleInput {
+  addEndpoint?: string;
+  removeEndpoint?: string;
+  removeRule?: string;
+  binary?: string;
+  anyBinary?: boolean;
+  ruleName?: string;
+  dryRun?: boolean;
+}
+
+function optionalText(what: string, v: unknown): string | undefined {
+  const s = String(v ?? '').trim();
+  if (!s) return undefined;
+  if (/[\0\r\n]/.test(s)) throw new Error(`${what} may not contain newlines`);
+  return s;
+}
+
+/**
+ * `ncl openshell-policy add-rule` — the direct (no-proposal) network edit. The
+ * resource validates the rule formats; this only shapes the frame and refuses
+ * an edit that changes nothing.
+ */
+export function policyAddRuleFrame(sandbox: unknown, input: AddRuleInput): PolicyFrame {
+  const args: Record<string, unknown> = { sandbox: sandboxArg(sandbox) };
+  const fields: [keyof AddRuleInput, string][] = [
+    ['addEndpoint', 'add_endpoint'],
+    ['removeEndpoint', 'remove_endpoint'],
+    ['removeRule', 'remove_rule'],
+    ['binary', 'binary'],
+    ['ruleName', 'rule_name'],
+  ];
+  for (const [key, arg] of fields) {
+    const v = optionalText(key, input?.[key]);
+    if (v !== undefined) args[arg] = v;
+  }
+  if (!args.add_endpoint && !args.remove_endpoint && !args.remove_rule)
+    throw new Error('Give an endpoint to add, an endpoint to remove, or a rule to remove');
+  if (input?.anyBinary === true) args.any_binary = true;
+  if (input?.dryRun === true) args.dry_run = true;
+  return { command: 'openshell-policy-add-rule', args };
+}
+
+const PRESET_NAME = /^[a-z0-9][a-z0-9-]{0,62}$/;
+
+export function policyApplyPresetFrame(sandbox: unknown, preset: unknown, dryRun: unknown): PolicyFrame {
+  const name = String(preset ?? '').trim();
+  if (!PRESET_NAME.test(name)) throw new Error('A preset name is required (lowercase letters, digits, "-")');
+  return {
+    command: 'openshell-policy-apply-preset',
+    args: { sandbox: sandboxArg(sandbox), preset: name, ...(dryRun === true ? { dry_run: true } : {}) },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// ncl openshell-provider-* request frames (src/cli/resources/openshell-provider.ts)
+// ---------------------------------------------------------------------------
+
+/** Any in-process `ncl` request frame; the policy and provider frames share the shape. */
+export type NclFrame = PolicyFrame;
+
+const GROUP_REF = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+
+function groupArg(group: unknown): string {
+  const g = String(group ?? '').trim();
+  if (!GROUP_REF.test(g)) throw new Error('An agent group is required');
+  return g;
+}
+
+function providerArg(provider: unknown): string {
+  const p = String(provider ?? '').trim();
+  if (!PROVIDER_NAME.test(p))
+    throw new Error('Provider name: 1-63 letters, digits, ".", "_" or "-", starting with a letter or digit');
+  return p;
+}
+
+export function groupProvidersFrame(group: unknown): NclFrame {
+  return { command: 'openshell-provider-list', args: { group: groupArg(group) } };
+}
+
+export function providerAttachFrame(group: unknown, provider: unknown): NclFrame {
+  return { command: 'openshell-provider-attach', args: { group: groupArg(group), provider: providerArg(provider) } };
+}
+
+export function providerDetachFrame(group: unknown, provider: unknown): NclFrame {
+  return { command: 'openshell-provider-detach', args: { group: groupArg(group), provider: providerArg(provider) } };
+}
+
+export function profileListFrame(): NclFrame {
+  return { command: 'openshell-provider-profile-list', args: { output: 'table' } };
+}
+
+/** The UI's upload and paste both arrive as the YAML text; the resource stages it in a private temp file. */
+export const MAX_PROFILE_YAML = 512 * 1024;
+
+export function profileImportFrame(yaml: unknown, global: unknown): NclFrame {
+  const text = typeof yaml === 'string' ? yaml : '';
+  if (!text.trim()) throw new Error('Paste or upload the profile YAML');
+  if (Buffer.byteLength(text, 'utf8') > MAX_PROFILE_YAML) throw new Error('Profile YAML is larger than 512 KiB');
+  return {
+    command: 'openshell-provider-profile-import',
+    args: { yaml: text, ...(global === true ? { global: true } : {}) },
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Lenient parse of `openshell rule get` text (v0.1.2 run.rs sandbox_draft_get)
 // ---------------------------------------------------------------------------

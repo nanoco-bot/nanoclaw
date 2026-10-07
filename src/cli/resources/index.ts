@@ -11,6 +11,7 @@ import './members.js';
 import './destinations.js';
 import './policies.js';
 import './openshell-policy.js';
+import './openshell-provider.js';
 import './user-dms.js';
 import './dropped-messages.js';
 import './approvals.js';

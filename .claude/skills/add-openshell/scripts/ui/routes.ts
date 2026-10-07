@@ -12,23 +12,40 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import path from 'node:path';
 
 import {
+  MAX_PROFILE_YAML,
   credentialScriptEnv,
+  groupProvidersFrame,
   missingDeclaredCredentials,
   parseCredentialSource,
   parseRuleChunks,
+  policyAddRuleFrame,
+  policyApplyPresetFrame,
   policyApproveFrame,
   policyListFrame,
   policyRejectFrame,
   policyViewFrame,
+  profileImportFrame,
+  profileListFrame,
+  providerAttachFrame,
   providerCreateInvocation,
+  providerDetachFrame,
   providerGetArgs,
   providerListArgs,
   type CredentialSubmission,
+  type NclFrame,
   type PolicyFrame,
   type ProviderCreateInput,
   type RuleChunk,
 } from './commands.js';
-import { ACTOR, appendDecision, mergeHistory, readDecisions } from './history.js';
+import {
+  ACTOR,
+  appendDecision,
+  groupAudit,
+  mergeHistory,
+  readDecisions,
+  readPolicyChanges,
+  readProviderChangeLines,
+} from './history.js';
 import { PROVIDER_PROFILES, isGenericType } from './profiles.js';
 
 export interface ExecResult {
@@ -48,17 +65,43 @@ export interface UiDeps {
   runOpenShell(args: string[], env: Record<string, string>): Promise<ExecResult>;
   /** An `ncl openshell-policy-*` request, as the host caller. */
   dispatchPolicy(frame: PolicyFrame): Promise<DispatchResult>;
+  /** An `ncl openshell-provider-*` request, as the host caller (needs the central DB). */
+  dispatchProvider(frame: NclFrame): Promise<DispatchResult>;
+  /** Agent groups, for the group selector (central DB). */
+  listGroups(): Promise<GroupSummary[]>;
+  /** Every sandbox name the group has had — one per session (central DB), live or not. */
+  groupSandboxNames(groupId: string): Promise<string[]>;
+  /** The egress presets `apply-preset` accepts. */
+  listPresets(): PresetSummary[];
   /** The add-openshell skill's `scripts/auth.ts claude` with this environment. */
   runCredentialScript(env: NodeJS.ProcessEnv): Promise<ExecResult>;
   /** setup/verify.ts checkCredentials() for this install. */
   checkCredentials(): { credentials: string; credentialSource: string };
   gatewayKind(): string;
   decisionLog: string;
+  /** `ncl openshell-policy add-rule|apply-preset` log: data/openshell-policy/changes.jsonl. */
+  policyChangeLog: string;
+  /** `ncl openshell-provider-*` log: data/openshell-provider/changes.jsonl. */
+  providerChangeLog: string;
   staticDir: string;
   now?: () => Date;
 }
 
+export interface GroupSummary {
+  id: string;
+  name: string;
+  folder: string;
+}
+
+export interface PresetSummary {
+  name: string;
+  version: number;
+  description: string;
+}
+
 const MAX_BODY = 64 * 1024;
+/** Profile YAML travels in the body: its own cap plus JSON-escaping headroom. */
+const MAX_PROFILE_BODY = MAX_PROFILE_YAML * 2 + 4096;
 
 /** Build a frame/argv from request input; a validation error is the client's (400). */
 function input<T>(build: () => T): T {
@@ -88,7 +131,7 @@ function send(res: ServerResponse, status: number, body: unknown): void {
   res.end(text);
 }
 
-async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> {
+async function readJson(req: IncomingMessage, maxBody = MAX_BODY): Promise<Record<string, unknown>> {
   const type = String(req.headers['content-type'] ?? '');
   if (!type.toLowerCase().startsWith('application/json'))
     throw new HttpError(415, 'POST bodies must be application/json');
@@ -96,7 +139,7 @@ async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> 
   const parts: Buffer[] = [];
   for await (const chunk of req) {
     size += (chunk as Buffer).length;
-    if (size > MAX_BODY) throw new HttpError(413, 'Request body too large');
+    if (size > maxBody) throw new HttpError(413, 'Request body too large');
     parts.push(chunk as Buffer);
   }
   try {
@@ -141,6 +184,10 @@ function policyData(r: DispatchResult): { output: string; note?: string; proposa
     ...(typeof d.note === 'string' ? { note: d.note } : {}),
     ...(typeof d.proposals === 'string' ? { proposals: d.proposals } : {}),
   };
+}
+
+function failure(r: DispatchResult): { error?: string } {
+  return r.ok ? {} : { error: r.error?.message ?? 'unknown error' };
 }
 
 const STATIC: Record<string, { file: string; type: string }> = {
@@ -338,6 +385,132 @@ export function createHandler(deps: UiDeps): (req: IncomingMessage, res: ServerR
         logFile: deps.decisionLog,
         entries: mergeHistory(local, remote, sandbox),
         ...(remoteError ? { remoteError } : {}),
+      });
+      return;
+    }
+
+    // ---- network paths: direct edits (add-rule / apply-preset) -------------------
+
+    if (method === 'GET' && url.pathname === '/api/presets') {
+      send(res, 200, { presets: deps.listPresets() });
+      return;
+    }
+
+    if (method === 'POST' && url.pathname === '/api/policy/add-rule') {
+      const body = await readJson(req);
+      const frame = input(() =>
+        policyAddRuleFrame(body.sandbox, {
+          addEndpoint: body.addEndpoint as string,
+          removeEndpoint: body.removeEndpoint as string,
+          removeRule: body.removeRule as string,
+          binary: body.binary as string,
+          ruleName: body.ruleName as string,
+          anyBinary: body.anyBinary === true,
+          dryRun: body.dryRun === true,
+        }),
+      );
+      const result = await deps.dispatchPolicy(frame);
+      send(res, result.ok ? 200 : 502, { ok: result.ok, ...policyData(result), ...failure(result) });
+      return;
+    }
+
+    if (method === 'POST' && url.pathname === '/api/policy/apply-preset') {
+      const body = await readJson(req);
+      const frame = input(() => policyApplyPresetFrame(body.sandbox, body.preset, body.dryRun));
+      const result = await deps.dispatchPolicy(frame);
+      send(res, result.ok ? 200 : 502, { ok: result.ok, result: result.data ?? null, ...failure(result) });
+      return;
+    }
+
+    // ---- system-wide: provider profiles ------------------------------------------
+
+    if (method === 'GET' && url.pathname === '/api/profiles') {
+      const result = await deps.dispatchProvider(profileListFrame());
+      send(res, result.ok ? 200 : 502, { ok: result.ok, ...policyData(result), ...failure(result) });
+      return;
+    }
+
+    if (method === 'POST' && url.pathname === '/api/profiles') {
+      const body = await readJson(req, MAX_PROFILE_BODY);
+      const frame = input(() => profileImportFrame(body.yaml, body.global));
+      const result = await deps.dispatchProvider(frame);
+      send(res, result.ok ? 200 : 502, { ok: result.ok, ...policyData(result), ...failure(result) });
+      return;
+    }
+
+    // ---- per agent group ------------------------------------------------------------
+
+    if (method === 'GET' && url.pathname === '/api/groups') {
+      send(res, 200, { groups: await deps.listGroups() });
+      return;
+    }
+
+    if (method === 'GET' && url.pathname === '/api/group/providers') {
+      const result = await deps.dispatchProvider(input(() => groupProvidersFrame(url.searchParams.get('group'))));
+      send(res, result.ok ? 200 : 502, { ok: result.ok, ...((result.data as object) ?? {}), ...failure(result) });
+      return;
+    }
+
+    if (
+      method === 'POST' &&
+      (url.pathname === '/api/group/providers/attach' || url.pathname === '/api/group/providers/detach')
+    ) {
+      const body = await readJson(req);
+      const frame = input(() =>
+        url.pathname.endsWith('/attach')
+          ? providerAttachFrame(body.group, body.provider)
+          : providerDetachFrame(body.group, body.provider),
+      );
+      // The resource persists, applies to live sandboxes, and writes the audit log.
+      const result = await deps.dispatchProvider(frame);
+      send(res, result.ok ? 200 : 502, { ok: result.ok, result: result.data ?? null, ...failure(result) });
+      return;
+    }
+
+    if (method === 'GET' && url.pathname === '/api/audit') {
+      const groupId = input(() => {
+        const g = url.searchParams.get('group')?.trim();
+        if (!g) throw new Error('An agent group is required');
+        return g;
+      });
+      const listing = await deps.dispatchProvider(groupProvidersFrame(groupId));
+      const live = listing.ok
+        ? (((listing.data as { sandboxes?: { name: string }[] }).sandboxes ?? []).map((s) => s.name) as string[])
+        : [];
+      const sandboxes = new Set([...(await deps.groupSandboxNames(groupId)), ...live]);
+      // Decisions OpenShell holds for the live sandboxes that no local log recorded.
+      const decisions = readDecisions(deps.decisionLog);
+      const openshellOnly = [];
+      const remoteErrors: string[] = [];
+      for (const sandbox of live) {
+        const [approved, rejected] = await Promise.all(
+          (['approved', 'rejected'] as const).map((s) => deps.dispatchPolicy(policyListFrame(sandbox, s))),
+        );
+        if (!approved.ok || !rejected.ok) {
+          remoteErrors.push(`${sandbox}: ${(approved.ok ? rejected : approved).error?.message ?? 'listing failed'}`);
+          continue;
+        }
+        const remote = {
+          sandbox,
+          approved: parseRuleChunks(policyData(approved).output),
+          rejected: parseRuleChunks(policyData(rejected).output),
+        };
+        openshellOnly.push(...mergeHistory(decisions, remote, sandbox).filter((h) => h.source === 'openshell'));
+      }
+      send(res, 200, {
+        group: groupId,
+        sandboxes: [...sandboxes],
+        logFiles: [deps.providerChangeLog, deps.policyChangeLog, deps.decisionLog],
+        entries: groupAudit({
+          groupId,
+          sandboxes,
+          decisions,
+          policyChanges: readPolicyChanges(deps.policyChangeLog),
+          providerChanges: readProviderChangeLines(deps.providerChangeLog),
+          openshellOnly,
+        }),
+        ...(listing.ok ? {} : { liveError: listing.error?.message ?? 'could not list live sandboxes' }),
+        ...(remoteErrors.length ? { remoteErrors } : {}),
       });
       return;
     }

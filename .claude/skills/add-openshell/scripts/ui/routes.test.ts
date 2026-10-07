@@ -17,6 +17,9 @@ let dir: string;
 let deps: UiDeps & {
   runOpenShell: ReturnType<typeof vi.fn>;
   dispatchPolicy: ReturnType<typeof vi.fn>;
+  dispatchProvider: ReturnType<typeof vi.fn>;
+  listGroups: ReturnType<typeof vi.fn>;
+  groupSandboxNames: ReturnType<typeof vi.fn>;
   runCredentialScript: ReturnType<typeof vi.fn>;
   checkCredentials: ReturnType<typeof vi.fn>;
 };
@@ -48,10 +51,16 @@ beforeEach(async () => {
   deps = {
     runOpenShell: vi.fn(async () => exec()),
     dispatchPolicy: vi.fn(async () => policyOk('')),
+    dispatchProvider: vi.fn(async (): Promise<DispatchResult> => ({ ok: true, data: { output: '' } })),
+    listGroups: vi.fn(async () => [{ id: 'ag-1', name: 'Main', folder: 'main' }]),
+    groupSandboxNames: vi.fn(async () => [] as string[]),
+    listPresets: () => [{ name: 'github', version: 1, description: 'GitHub API + git over HTTPS' }],
     runCredentialScript: vi.fn(async () => exec('stored')),
     checkCredentials: vi.fn(() => ({ credentials: 'configured', credentialSource: 'running-service:api-key' })),
     gatewayKind: () => 'openshell',
     decisionLog: path.join(dir, 'data', 'openshell-setup-ui', 'decisions.jsonl'),
+    policyChangeLog: path.join(dir, 'data', 'openshell-policy', 'changes.jsonl'),
+    providerChangeLog: path.join(dir, 'data', 'openshell-provider', 'changes.jsonl'),
     staticDir: STATIC_DIR,
     now: () => new Date('2026-10-05T12:00:00.000Z'),
   };
@@ -66,15 +75,41 @@ afterEach(async () => {
 });
 
 describe('static page', () => {
-  it('serves the HTML and the script, with the four panels', async () => {
+  it('serves the HTML and the script: Providers / Agent groups (4 sub-tabs) / Claude credential', async () => {
     const page = await call('GET', '/');
     expect(page.status).toBe(200);
     expect(page.type).toMatch(/text\/html/);
-    for (const id of ['credential', 'providers', 'policy', 'history'])
-      expect(page.text).toContain(`<section id="${id}">`);
+    // Top-level tabs, each a panel reachable from its nav link.
+    for (const tab of ['providers', 'group', 'credential']) {
+      expect(page.text).toMatch(new RegExp(`<div id="tab-${tab}" class="tab"`));
+      expect(page.text).toContain(`id="tab-link-${tab}"`);
+    }
+    // System-wide Providers tab: profiles + provider instances.
+    for (const id of ['profiles', 'providers', 'credential'])
+      expect(page.text).toMatch(new RegExp(`<section id="${id}"`));
+    // Per-group sub-tabs.
+    for (const sub of ['attach', 'network', 'pending', 'audit']) {
+      expect(page.text).toContain(`<section id="${sub}" class="subtab"`);
+      expect(page.text).toContain(`href="#group/${sub}" id="sub-link-${sub}"`);
+    }
+    expect(page.text).toContain('<select id="group">');
     const js = await call('GET', '/app.js');
     expect(js.type).toMatch(/javascript/);
     expect(js.text).not.toMatch(/\.innerHTML\s*=|insertAdjacentHTML|document\.write/);
+  });
+
+  it('every element the script looks up exists in the page (no dead control after the tabs move)', async () => {
+    const page = (await call('GET', '/')).text;
+    const js = (await call('GET', '/app.js')).text;
+    const ids = new Set([...js.matchAll(/\$\('([A-Za-z0-9-]+)'\)/g)].map((m) => m[1]));
+    expect(ids.size).toBeGreaterThan(40);
+    for (const id of ids) expect(page, `#${id}`).toContain(`id="${id}"`);
+    // The tab switcher builds these ids from its tab lists.
+    for (const t of ['providers', 'group', 'credential']) expect(page).toContain(`id="tab-${t}"`);
+    for (const t of ['attach', 'network', 'pending', 'audit']) expect(page).toContain(`id="sub-link-${t}"`);
+    // Every pre-tabs control is still there.
+    for (const id of ['cred-save', 'prov-create', 'prov-list', 'pol-list', 'pol-view', 'pol-sandbox', 'hist-load'])
+      expect(page).toContain(`id="${id}"`);
   });
 
   it('unknown paths are 404 JSON', async () => {
@@ -372,5 +407,199 @@ describe('4 · history', () => {
     const r = await call('GET', '/api/history?sandbox=ncl-abc');
     expect(r.status).toBe(200);
     expect(r.json).toMatchObject({ entries: [], remoteError: 'gateway down' });
+  });
+});
+
+describe('Providers tab · profiles (system-wide)', () => {
+  it('list dispatches openshell-provider-profile-list', async () => {
+    deps.dispatchProvider.mockResolvedValueOnce({ ok: true, data: { command: [], output: 'granola  Granola\n' } });
+    const r = await call('GET', '/api/profiles');
+    expect(deps.dispatchProvider).toHaveBeenCalledWith({
+      command: 'openshell-provider-profile-list',
+      args: { output: 'table' },
+    });
+    expect(r.json).toMatchObject({ ok: true, output: 'granola  Granola\n' });
+  });
+
+  it('import sends the pasted/uploaded YAML text to profile-import (no group); errors come back as 502', async () => {
+    deps.dispatchProvider.mockResolvedValueOnce({ ok: true, data: { output: 'Imported granola' } });
+    const ok = await call('POST', '/api/profiles', { yaml: 'id: granola\n', global: true });
+    expect(ok.status).toBe(200);
+    expect(deps.dispatchProvider).toHaveBeenLastCalledWith({
+      command: 'openshell-provider-profile-import',
+      args: { yaml: 'id: granola\n', global: true },
+    });
+    deps.dispatchProvider.mockResolvedValueOnce({ ok: false, error: { code: 'x', message: 'lint failed' } });
+    const bad = await call('POST', '/api/profiles', { yaml: 'nope' });
+    expect(bad.status).toBe(502);
+    expect(bad.json).toMatchObject({ ok: false, error: 'lint failed' });
+  });
+
+  it('import: empty YAML is a 400; a body over the profile cap is a 413', async () => {
+    expect((await call('POST', '/api/profiles', { yaml: '  ' })).status).toBe(400);
+    expect((await call('POST', '/api/profiles', { yaml: 'x'.repeat(1_100_000) })).status).toBe(413);
+    expect(deps.dispatchProvider).not.toHaveBeenCalled();
+  });
+});
+
+describe('Agent groups · selector + Attach / Detach', () => {
+  it('lists agent groups', async () => {
+    expect((await call('GET', '/api/groups')).json).toEqual({ groups: [{ id: 'ag-1', name: 'Main', folder: 'main' }] });
+  });
+
+  it("group providers: the resource's list (providers + live sandboxes)", async () => {
+    deps.dispatchProvider.mockResolvedValueOnce({
+      ok: true,
+      data: { group: { id: 'ag-1' }, providers: ['granola'], sandboxes: [{ name: 'ncl-abc', phase: 'Ready' }] },
+    });
+    const r = await call('GET', '/api/group/providers?group=ag-1');
+    expect(deps.dispatchProvider).toHaveBeenCalledWith({ command: 'openshell-provider-list', args: { group: 'ag-1' } });
+    expect(r.json).toMatchObject({ ok: true, providers: ['granola'], sandboxes: [{ name: 'ncl-abc' }] });
+    expect((await call('GET', '/api/group/providers')).status).toBe(400);
+  });
+
+  it('attach / detach dispatch the openshell-provider resource (which persists, applies live, and logs)', async () => {
+    deps.dispatchProvider.mockResolvedValue({ ok: true, data: { providers: ['granola'], live: [] } });
+    const a = await call('POST', '/api/group/providers/attach', { group: 'ag-1', provider: 'granola' });
+    expect(a.status).toBe(200);
+    expect(a.json).toMatchObject({ ok: true, result: { providers: ['granola'] } });
+    await call('POST', '/api/group/providers/detach', { group: 'ag-1', provider: 'granola' });
+    expect(deps.dispatchProvider.mock.calls.map((c) => c[0])).toEqual([
+      { command: 'openshell-provider-attach', args: { group: 'ag-1', provider: 'granola' } },
+      { command: 'openshell-provider-detach', args: { group: 'ag-1', provider: 'granola' } },
+    ]);
+  });
+
+  it("attach: invalid input is a 400 before anything runs; the resource's refusal is a 502 with its text", async () => {
+    expect((await call('POST', '/api/group/providers/attach', { group: 'ag-1', provider: '-x' })).status).toBe(400);
+    expect((await call('POST', '/api/group/providers/attach', { provider: 'granola' })).status).toBe(400);
+    expect(deps.dispatchProvider).not.toHaveBeenCalled();
+    deps.dispatchProvider.mockResolvedValueOnce({
+      ok: false,
+      error: { code: 'handler-error', message: 'provider not found: granola' },
+    });
+    const r = await call('POST', '/api/group/providers/attach', { group: 'ag-1', provider: 'granola' });
+    expect(r.status).toBe(502);
+    expect(r.json).toMatchObject({ ok: false, error: 'provider not found: granola' });
+  });
+});
+
+describe('Agent groups · Network paths', () => {
+  it('add-rule dispatches openshell-policy-add-rule with only the fields given', async () => {
+    deps.dispatchPolicy.mockResolvedValueOnce(policyOk('merged policy preview'));
+    const r = await call('POST', '/api/policy/add-rule', {
+      sandbox: 'ncl-abc',
+      addEndpoint: 'api.example.com:443',
+      binary: '/usr/bin/curl',
+      ruleName: '',
+      dryRun: true,
+    });
+    expect(r.json).toMatchObject({ ok: true, output: 'merged policy preview' });
+    expect(deps.dispatchPolicy).toHaveBeenCalledWith({
+      command: 'openshell-policy-add-rule',
+      args: { sandbox: 'ncl-abc', add_endpoint: 'api.example.com:443', binary: '/usr/bin/curl', dry_run: true },
+    });
+  });
+
+  it('add-rule that changes nothing is a 400', async () => {
+    expect((await call('POST', '/api/policy/add-rule', { sandbox: 'ncl-abc', binary: '/x' })).status).toBe(400);
+    expect(deps.dispatchPolicy).not.toHaveBeenCalled();
+  });
+
+  it('presets are listed; apply-preset dispatches openshell-policy-apply-preset', async () => {
+    expect((await call('GET', '/api/presets')).json?.presets[0]).toMatchObject({ name: 'github', version: 1 });
+    deps.dispatchPolicy.mockResolvedValueOnce({ ok: true, data: { dryRun: true, applied: 0, commands: [['policy']] } });
+    const r = await call('POST', '/api/policy/apply-preset', { sandbox: 'ncl-abc', preset: 'github', dryRun: true });
+    expect(r.json).toMatchObject({ ok: true, result: { dryRun: true } });
+    expect(deps.dispatchPolicy).toHaveBeenCalledWith({
+      command: 'openshell-policy-apply-preset',
+      args: { sandbox: 'ncl-abc', preset: 'github', dry_run: true },
+    });
+    expect((await call('POST', '/api/policy/apply-preset', { sandbox: 'ncl-abc', preset: '../x' })).status).toBe(400);
+  });
+});
+
+describe('Agent groups · Audit log', () => {
+  function writeLines(file: string, lines: unknown[]) {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, lines.map((l) => JSON.stringify(l)).join('\n') + '\n');
+  }
+
+  it("combines this group's provider log, network decisions and policy changes on its sandboxes; newest first", async () => {
+    deps.groupSandboxNames.mockResolvedValueOnce(['ncl-old']);
+    deps.dispatchProvider.mockResolvedValueOnce({
+      ok: true,
+      data: { providers: [], sandboxes: [{ name: 'ncl-live', phase: 'Ready' }] },
+    });
+    // Remote: one approved decision on the live sandbox that no local log has.
+    deps.dispatchPolicy.mockImplementation(async (frame: PolicyFrame) =>
+      policyOk(frame.args.status === 'approved' ? '  Chunk: remote-1\n  Rule: r\n' : ''),
+    );
+    writeLines(deps.providerChangeLog, [
+      {
+        ts: '2026-10-01T00:00:00.000Z',
+        verb: 'attach',
+        caller: 'host',
+        group: 'ag-1',
+        provider: 'granola',
+        ok: true,
+        live: [],
+      },
+      {
+        ts: '2026-10-04T00:00:00.000Z',
+        verb: 'detach',
+        caller: 'host',
+        group: 'ag-1',
+        provider: 'granola',
+        ok: false,
+        error: 'boom',
+        persisted: true,
+      },
+      { ts: '2026-10-05T00:00:00.000Z', verb: 'attach', caller: 'host', group: 'ag-2', provider: 'other', ok: true },
+      { ts: '2026-10-05T00:00:00.000Z', verb: 'profile-import', caller: 'host', ok: true },
+    ]);
+    writeLines(deps.policyChangeLog, [
+      {
+        ts: '2026-10-02T00:00:00.000Z',
+        verb: 'add-rule',
+        caller: 'host',
+        sandbox: 'ncl-old',
+        command: ['policy', 'update', 'ncl-old', '--add-endpoint', 'a:443'],
+        ok: true,
+      },
+      { ts: '2026-10-02T00:00:00.000Z', verb: 'add-rule', caller: 'host', sandbox: 'ncl-someone-else', ok: true },
+    ]);
+    writeLines(deps.decisionLog, [
+      {
+        ts: '2026-10-03T00:00:00.000Z',
+        sandbox: 'ncl-live',
+        chunkId: 'c1',
+        decision: 'rejected',
+        reason: 'no',
+        ok: true,
+        actor: 'openshell-setup-ui',
+      },
+    ]);
+
+    const r = await call('GET', '/api/audit?group=ag-1');
+    expect(r.status).toBe(200);
+    expect(deps.groupSandboxNames).toHaveBeenCalledWith('ag-1');
+    expect(r.json?.sandboxes.sort()).toEqual(['ncl-live', 'ncl-old']);
+    expect(r.json?.entries.map((e: Record<string, unknown>) => [e.ts ?? null, e.kind, e.action, e.subject])).toEqual([
+      ['2026-10-04T00:00:00.000Z', 'provider', 'detach', 'granola'],
+      ['2026-10-03T00:00:00.000Z', 'network-decision', 'rejected', 'c1'],
+      ['2026-10-02T00:00:00.000Z', 'network-change', 'add-rule', '--add-endpoint a:443'],
+      ['2026-10-01T00:00:00.000Z', 'provider', 'attach', 'granola'],
+      [null, 'network-decision', 'approved', 'remote-1 · r'],
+    ]);
+    expect(r.json?.entries[0]).toMatchObject({ ok: false, detail: 'boom (group config was saved)' });
+  });
+
+  it('needs a group; a gateway that cannot list sandboxes still returns the local logs', async () => {
+    expect((await call('GET', '/api/audit')).status).toBe(400);
+    deps.dispatchProvider.mockResolvedValueOnce({ ok: false, error: { code: 'x', message: 'db missing' } });
+    const r = await call('GET', '/api/audit?group=ag-1');
+    expect(r.status).toBe(200);
+    expect(r.json).toMatchObject({ entries: [], liveError: 'db missing' });
   });
 });

@@ -1,13 +1,18 @@
 # OpenShell setup UI
 
-A small operator web page for a NanoClaw install that runs on OpenShell. It uses plain `node:http`, one HTML page and vanilla JS, with no build step. It does not implement any OpenShell client logic; every action runs a command that already exists:
+A small operator web page for a NanoClaw install that runs on OpenShell. It uses plain `node:http`, one HTML page and vanilla JS, with no build step. It does not implement any OpenShell client logic; every action runs a command that already exists. The page has three tabs; **Agent groups** has a group selector (and a sandbox picker filled with the group's live sandboxes) and four sub-tabs:
 
-| Panel | What runs | Confirmation shown |
+| Tab | What runs | Confirmation shown |
 |---|---|---|
+| Providers · profiles (system-wide) | `ncl openshell-provider profile-list` / `profile-import` (pasted or uploaded YAML, staged in a private temp file) | The command's output |
+| Providers · instances (system-wide) | `openshell provider create --name … --type … [--credential KEY]… [--config K=V]… [--global-profile]`, then `openshell provider get <name>`; `openshell provider list` | Raw stdout and stderr of both commands |
+| Agent groups · Attach / Detach | `ncl openshell-provider list / attach / detach --group <id>`: saved to the group's config (every new sandbox gets `--provider`), and applied at once to the group's live sandboxes | The group's provider list and which live sandboxes were changed |
+| Agent groups · Network paths | `ncl openshell-policy view / add-rule / apply-preset` on the selected sandbox (dry run by default) | The command's output |
+| Agent groups · Pending approvals | `ncl openshell-policy list / approve / reject` | The command's output, the `agent_policy_proposals_enabled` note, and parsed chunks |
+| Agent groups · Audit log | — | For the group, newest first: `data/openshell-provider/changes.jsonl` (attach/detach), `data/openshell-setup-ui/decisions.jsonl` (approve/reject, append-only, 0600) and `data/openshell-policy/changes.jsonl` (add-rule/apply-preset) on any of its sandboxes, plus decisions OpenShell lists for its live sandboxes that no log has |
 | Claude credential | `scripts/auth.ts claude`, with exactly one of `NANOCLAW_CLAUDE_CODE_OAUTH_TOKEN` or `NANOCLAW_ANTHROPIC_API_KEY` set (the other inputs are cleared) | The credential kind read back by `setup/verify.ts` `checkCredentials()`: the service's `/proc/<pid>/environ`, else the unit's Environment, else the drop-in |
-| Provider | `openshell provider create --name … --type … [--credential KEY]… [--config K=V]… [--global-profile]`, then `openshell provider get <name>` | Raw stdout and stderr of both commands |
-| Proposals | `ncl openshell-policy list/approve/reject/view`, dispatched in-process as the host caller | The command's output, the `agent_policy_proposals_enabled` note, and parsed chunks |
-| History | — | `data/openshell-setup-ui/decisions.jsonl` (append-only, 0600), plus decisions OpenShell lists as approved or rejected that the log has no record of |
+
+The `ncl` commands are dispatched in-process as the host caller. The policy commands touch no database. The provider commands, the group selector and the audit open the central DB (`data/v2.db`) lazily, in the same `tool` role the repo's own scripts use. The host stays the only process that runs migrations, so after an update restart the host once before attaching providers here.
 
 Credential values for `provider create` are passed with OpenShell's `--credential KEY` env-lookup form. The value is in the child's environment, not its argv, so it never appears in the process table.
 

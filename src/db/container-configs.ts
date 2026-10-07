@@ -125,6 +125,45 @@ export async function updateContainerConfigJson(
   );
 }
 
+/**
+ * The OpenShell provider instance names attached to a group, in attach order.
+ * A missing row, a pre-migration NULL, or an unparseable value all read as
+ * "none" — the driver then creates the sandbox provider-less, exactly as
+ * before the column existed.
+ */
+export async function getGroupOpenShellProviders(agentGroupId: string): Promise<string[]> {
+  const row = await getDb().get<{ openshell_providers: string | null }>(
+    'SELECT openshell_providers FROM container_configs WHERE agent_group_id = ?',
+    agentGroupId,
+  );
+  return parseOpenShellProviders(row?.openshell_providers);
+}
+
+export function parseOpenShellProviders(raw: string | null | undefined): string[] {
+  if (!raw) return [];
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.filter((p): p is string => typeof p === 'string' && p.length > 0) : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Overwrite the group's attached-provider list (deduplicated, order kept).
+ * Creates the config row if the group has none yet.
+ */
+export async function setGroupOpenShellProviders(agentGroupId: string, providers: readonly string[]): Promise<void> {
+  await ensureContainerConfig(agentGroupId);
+  const unique = [...new Set(providers)];
+  await getDb().run(
+    'UPDATE container_configs SET openshell_providers = ?, updated_at = ? WHERE agent_group_id = ?',
+    JSON.stringify(unique),
+    new Date().toISOString(),
+    agentGroupId,
+  );
+}
+
 export async function deleteContainerConfig(agentGroupId: string): Promise<void> {
   await getDb().run('DELETE FROM container_configs WHERE agent_group_id = ?', agentGroupId);
 }

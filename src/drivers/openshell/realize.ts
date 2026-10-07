@@ -21,6 +21,7 @@ import {
 } from './seam.js';
 import { OpenShellCliError } from './cli.js';
 import type { DriverConfig } from './policy.js';
+import { providerFlags } from './provider-commands.js';
 
 /**
  * Sandbox names are DNS-1123 labels of at most 19 bytes on v0.1.2
@@ -58,16 +59,29 @@ export interface CreateArgsInput {
   name: string;
   policyPath: string;
   driverConfig: DriverConfig | null;
+  /**
+   * OpenShell provider instances attached to this session's agent group
+   * (`ncl openshell-provider attach`, persisted per group). Empty = a
+   * provider-less sandbox, the pre-feature behavior.
+   */
+  providers: readonly string[];
 }
 
 /**
  * `openshell sandbox create` argv. `--detach` returns once the sandbox is
  * provisioned without attaching to the main process; `--no-tty` and
  * `--no-auto-providers` keep it non-interactive (a prompt would hang the host).
+ *
+ * One `--provider <name>` per provider attached to the group, so the sandbox
+ * is born with them. `--no-auto-providers` stays: it means OpenShell never
+ * auto-creates a provider from local credentials, and fails the create if a
+ * named provider does not exist — fail closed, never a silently degraded
+ * sandbox.
  */
-export function createArgs({ spec, container, name, policyPath, driverConfig }: CreateArgsInput): string[] {
+export function createArgs({ spec, container, name, policyPath, driverConfig, providers }: CreateArgsInput): string[] {
   const args = ['sandbox', 'create', '--name', name, '--from', container.image, '--policy', policyPath];
   if (driverConfig) args.push('--driver-config-json', JSON.stringify(driverConfig));
+  args.push(...providerFlags(providers));
   for (const [k, v] of Object.entries(sandboxLabels(spec, container))) args.push('--label', `${k}=${v}`);
   // env first, then the contributed lane: on a key collision the contributed
   // value wins (the ordering the seam states as contract).

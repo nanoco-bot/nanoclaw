@@ -6,14 +6,17 @@
 <title>NanoClaw · OpenShell setup</title>
 <style>
   :root { font-family: system-ui, sans-serif; color: #1c1c1c; background: #f6f6f4; }
-  body { max-width: 980px; margin: 0 auto; padding: 1rem 1.25rem 3rem; }
+  body { max-width: 1040px; margin: 0 auto; padding: 1rem 1.25rem 3rem; }
   h1 { font-size: 1.3rem; margin: .5rem 0 0; }
   .sub { color: #666; margin: .25rem 0 1rem; font-size: .9rem; }
   section { background: #fff; border: 1px solid #ddd; border-radius: 8px; padding: 1rem 1.1rem; margin: 1rem 0; }
   h2 { font-size: 1.05rem; margin: 0 0 .6rem; }
+  h3 { font-size: .95rem; margin: 1rem 0 .4rem; }
   label { display: block; font-size: .85rem; margin: .5rem 0 .2rem; color: #333; }
+  label.inline { display: inline-flex; gap: .3rem; align-items: center; margin-right: 1rem; }
   input, select, textarea { font: inherit; padding: .35rem .45rem; border: 1px solid #bbb; border-radius: 4px; }
   input[type=text], input[type=password], select { width: 100%; max-width: 32rem; box-sizing: border-box; }
+  textarea { width: 100%; box-sizing: border-box; min-height: 10rem; font-family: ui-monospace, monospace; font-size: .8rem; }
   button { font: inherit; padding: .35rem .8rem; border-radius: 4px; border: 1px solid #555; background: #222; color: #fff; cursor: pointer; margin: .5rem .4rem 0 0; }
   button.secondary { background: #fff; color: #222; }
   button:disabled { opacity: .5; cursor: progress; }
@@ -27,72 +30,158 @@
   table { border-collapse: collapse; width: 100%; font-size: .85rem; margin-top: .5rem; }
   th, td { text-align: left; border-bottom: 1px solid #eee; padding: .35rem .3rem; vertical-align: top; }
   .badge { display: inline-block; padding: .05rem .4rem; border-radius: 3px; background: #eee; font-size: .78rem; }
+  nav.tabs { display: flex; gap: .25rem; border-bottom: 1px solid #ccc; margin: 1rem 0 0; flex-wrap: wrap; }
+  nav.tabs a { padding: .45rem .9rem; border: 1px solid transparent; border-bottom: none; border-radius: 6px 6px 0 0; color: #333; text-decoration: none; font-size: .92rem; }
+  nav.tabs a[aria-selected=true] { background: #fff; border-color: #ccc; color: #000; font-weight: 600; margin-bottom: -1px; }
+  nav.tabs.sub a { font-size: .86rem; padding: .35rem .75rem; }
+  .bar { display: flex; gap: 1rem; flex-wrap: wrap; align-items: end; background: #fff; border: 1px solid #ddd; border-radius: 8px; padding: .7rem 1.1rem; margin-top: 1rem; }
+  .bar > div { flex: 1 1 18rem; }
+  .bar label { margin-top: 0; }
+  .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr)); gap: 0 1rem; }
 </style>
 </head>
 <body>
 <h1>NanoClaw · OpenShell setup</h1>
-<p class="sub">Operator console for this install. Every action runs the existing <code>openshell</code> / <code>ncl openshell-policy</code> commands; their output is shown as-is.</p>
+<p class="sub">Operator console for this install. Every action runs the existing <code>openshell</code> / <code>ncl openshell-policy</code> / <code>ncl openshell-provider</code> commands; their output is shown as-is.</p>
 
-<section id="credential">
-  <h2>1 · Claude credential</h2>
-  <p class="hint">Stored in this install's systemd drop-in for the OpenShell model relay (never in <code>.env</code>). Confirmation is read back from the service environment the relay uses.</p>
-  <div id="cred-status" class="hint">Checking…</div>
-  <label for="cred-kind">Credential type</label>
-  <select id="cred-kind">
-    <option value="oauth">Claude OAuth token (sk-ant-oat…)</option>
-    <option value="api-key">Anthropic API key (sk-ant-api…)</option>
-  </select>
-  <label for="cred-value">Value</label>
-  <input id="cred-value" type="password" autocomplete="off" spellcheck="false">
-  <div><button id="cred-save">Save credential</button></div>
-  <div id="cred-result"></div>
-</section>
+<nav class="tabs" id="main-tabs" role="tablist">
+  <a href="#providers" id="tab-link-providers" role="tab">Providers</a>
+  <a href="#group/attach" id="tab-link-group" role="tab">Agent groups</a>
+  <a href="#credential" id="tab-link-credential" role="tab">Claude credential</a>
+</nav>
 
-<section id="providers">
-  <h2>2 · OpenShell provider</h2>
-  <label for="prov-name">Provider name</label>
-  <input id="prov-name" type="text" placeholder="e.g. anthropic-main">
-  <label for="prov-type">Type (profile id)</label>
-  <select id="prov-type"></select>
-  <div id="prov-custom-wrap" hidden>
-    <label for="prov-custom">Custom profile id</label>
-    <input id="prov-custom" type="text" placeholder="an imported profile's id">
-  </div>
-  <p id="prov-type-hint" class="hint"></p>
-  <label>Credentials <span class="hint">(--credential; env-var name + value)</span></label>
-  <div id="prov-creds"></div>
-  <button class="secondary" id="prov-add-cred" type="button">+ credential</button>
-  <label>Config <span class="hint">(--config KEY=VALUE, optional)</span></label>
-  <div id="prov-config"></div>
-  <button class="secondary" id="prov-add-config" type="button">+ config</button>
-  <label><input id="prov-global" type="checkbox"> --global-profile</label>
-  <div>
-    <button id="prov-create">Create provider</button>
+<!-- ===================== Providers (system-wide) ===================== -->
+<div id="tab-providers" class="tab" role="tabpanel" hidden>
+  <section id="profiles">
+    <h2>Provider profiles <span class="badge">system-wide</span></h2>
+    <p class="hint">Templates (e.g. a custom <code>granola</code> profile) that provider instances are created from. Gateway-wide: <code>ncl openshell-provider profile-list / profile-import</code>.</p>
+    <button class="secondary" id="prof-list">List profiles</button>
+    <div id="prof-list-result"></div>
+    <h3>Import a profile</h3>
+    <label for="prof-file">Upload a YAML file</label>
+    <input id="prof-file" type="file" accept=".yaml,.yml,.json,text/yaml,application/json">
+    <label for="prof-yaml">…or paste the YAML</label>
+    <textarea id="prof-yaml" spellcheck="false" placeholder="id: granola&#10;…"></textarea>
+    <label class="inline"><input id="prof-global" type="checkbox"> --global (platform-scoped)</label>
+    <div><button id="prof-import">Import profile</button></div>
+    <div id="prof-import-result"></div>
+  </section>
+
+  <section id="providers">
+    <h2>Provider instances <span class="badge">system-wide</span></h2>
+    <p class="hint">A provider instance holds the credential. Create it here from a profile, then attach it to agent groups in the <a href="#group/attach">Agent groups</a> tab.</p>
     <button class="secondary" id="prov-list">List providers</button>
-  </div>
-  <div id="prov-result"></div>
-</section>
+    <h3>Create a provider</h3>
+    <label for="prov-name">Provider name</label>
+    <input id="prov-name" type="text" placeholder="e.g. anthropic-main">
+    <label for="prov-type">Type (profile id)</label>
+    <select id="prov-type"></select>
+    <div id="prov-custom-wrap" hidden>
+      <label for="prov-custom">Custom profile id</label>
+      <input id="prov-custom" type="text" placeholder="an imported profile's id">
+    </div>
+    <p id="prov-type-hint" class="hint"></p>
+    <label>Credentials <span class="hint">(--credential; env-var name + value)</span></label>
+    <div id="prov-creds"></div>
+    <button class="secondary" id="prov-add-cred" type="button">+ credential</button>
+    <label>Config <span class="hint">(--config KEY=VALUE, optional)</span></label>
+    <div id="prov-config"></div>
+    <button class="secondary" id="prov-add-config" type="button">+ config</button>
+    <label class="inline"><input id="prov-global" type="checkbox"> --global-profile</label>
+    <div><button id="prov-create">Create provider</button></div>
+    <div id="prov-result"></div>
+  </section>
+</div>
 
-<section id="policy">
-  <h2>3 · Egress-policy proposals</h2>
-  <p class="hint">Rule proposals cover network egress only; filesystem and process policy is fixed at sandbox start.</p>
-  <label for="pol-sandbox">Sandbox name</label>
-  <input id="pol-sandbox" type="text" placeholder="ncl-0123abcd (from `openshell sandbox list`)">
-  <label for="pol-status">Show</label>
-  <select id="pol-status"><option>pending</option><option>approved</option><option>rejected</option></select>
-  <div>
-    <button id="pol-list">List proposals</button>
+<!-- ===================== Per agent group ===================== -->
+<div id="tab-group" class="tab" role="tabpanel" hidden>
+  <div class="bar">
+    <div>
+      <label for="group">Agent group</label>
+      <select id="group"><option value="">Loading…</option></select>
+    </div>
+    <div>
+      <label for="pol-sandbox">Sandbox <span class="hint">(for Network paths / Pending approvals)</span></label>
+      <select id="pol-sandbox-pick"></select>
+      <input id="pol-sandbox" type="text" placeholder="ncl-0123abcd (from `openshell sandbox list`)">
+    </div>
+  </div>
+  <div id="group-status" class="hint"></div>
+
+  <nav class="tabs sub" id="group-tabs" role="tablist">
+    <a href="#group/attach" id="sub-link-attach" role="tab">Attach / Detach</a>
+    <a href="#group/network" id="sub-link-network" role="tab">Network paths</a>
+    <a href="#group/pending" id="sub-link-pending" role="tab">Pending approvals</a>
+    <a href="#group/audit" id="sub-link-audit" role="tab">Audit log</a>
+  </nav>
+
+  <section id="attach" class="subtab" hidden>
+    <h2>Providers attached to this group</h2>
+    <p class="hint">Saved to the group's config: every new sandbox for the group is created with them (<code>--provider</code>), and attach / detach also apply at once to the group's live sandboxes. Runs <code>ncl openshell-provider attach / detach</code>.</p>
+    <div id="att-current"></div>
+    <label for="att-provider">Attach a provider instance</label>
+    <input id="att-provider" type="text" placeholder="provider name (see Providers tab)">
+    <div><button id="att-attach">Attach to group</button> <button class="secondary" id="att-refresh">Refresh</button></div>
+    <div id="att-result"></div>
+  </section>
+
+  <section id="network" class="subtab" hidden>
+    <h2>Network paths</h2>
+    <p class="hint">The selected sandbox's egress policy. Direct edits skip the proposal flow; filesystem and process policy is fixed at sandbox start.</p>
     <button class="secondary" id="pol-view">Current policy (JSON)</button>
-  </div>
-  <div id="pol-result"></div>
-</section>
+    <h3>Add / remove a rule <span class="hint">(<code>ncl openshell-policy add-rule</code>)</span></h3>
+    <div class="grid2">
+      <div><label for="rule-add-endpoint">Add endpoint (host:port[:access…])</label><input id="rule-add-endpoint" type="text" placeholder="api.example.com:443"></div>
+      <div><label for="rule-binary">Binary</label><input id="rule-binary" type="text" placeholder="/usr/bin/curl"></div>
+      <div><label for="rule-name">Rule name</label><input id="rule-name" type="text" placeholder="example_api"></div>
+      <div><label for="rule-remove-endpoint">Remove endpoint (host:port)</label><input id="rule-remove-endpoint" type="text"></div>
+      <div><label for="rule-remove-rule">Remove rule (by name)</label><input id="rule-remove-rule" type="text"></div>
+    </div>
+    <label class="inline"><input id="rule-any-binary" type="checkbox"> any binary</label>
+    <label class="inline"><input id="rule-dry-run" type="checkbox" checked> dry run (preview only)</label>
+    <div><button id="rule-apply">Send policy update</button></div>
+    <h3>Apply an egress preset <span class="hint">(<code>ncl openshell-policy apply-preset</code>)</span></h3>
+    <select id="preset"></select>
+    <label class="inline"><input id="preset-dry-run" type="checkbox" checked> dry run (preview only)</label>
+    <div><button id="preset-apply">Apply preset</button></div>
+    <div id="net-result"></div>
+  </section>
 
-<section id="history">
-  <h2>4 · Decision history</h2>
-  <p class="hint">This UI's own append-only log, plus (for the sandbox above) decisions OpenShell reports that the log has no record of.</p>
-  <button class="secondary" id="hist-load">Load history</button>
-  <div id="hist-result"></div>
-</section>
+  <section id="pending" class="subtab" hidden>
+    <h2>Pending approvals</h2>
+    <p class="hint">Rule proposals cover network egress only; filesystem and process policy is fixed at sandbox start.</p>
+    <label for="pol-status">Show</label>
+    <select id="pol-status"><option>pending</option><option>approved</option><option>rejected</option></select>
+    <div><button id="pol-list">List proposals</button></div>
+    <div id="pol-result"></div>
+  </section>
+
+  <section id="audit" class="subtab" hidden>
+    <h2>Audit log</h2>
+    <p class="hint">This group's provider attach/detach log, plus network-rule decisions and direct policy changes on any of its sandboxes (one per session), newest first; then decisions OpenShell reports for its live sandboxes that no local log recorded.</p>
+    <button class="secondary" id="audit-load">Load audit log</button>
+    <button class="secondary" id="hist-load">Decision log (all groups)</button>
+    <div id="audit-result"></div>
+  </section>
+</div>
+
+<!-- ===================== Claude credential ===================== -->
+<div id="tab-credential" class="tab" role="tabpanel" hidden>
+  <section id="credential">
+    <h2>Claude credential</h2>
+    <p class="hint">Stored in this install's systemd drop-in for the OpenShell model relay (never in <code>.env</code>). Confirmation is read back from the service environment the relay uses.</p>
+    <div id="cred-status" class="hint">Checking…</div>
+    <label for="cred-kind">Credential type</label>
+    <select id="cred-kind">
+      <option value="oauth">Claude OAuth token (sk-ant-oat…)</option>
+      <option value="api-key">Anthropic API key (sk-ant-api…)</option>
+    </select>
+    <label for="cred-value">Value</label>
+    <input id="cred-value" type="password" autocomplete="off" spellcheck="false">
+    <div><button id="cred-save">Save credential</button></div>
+    <div id="cred-result"></div>
+  </section>
+</div>
 
 <script src="/app.js"></script>
 </body>
