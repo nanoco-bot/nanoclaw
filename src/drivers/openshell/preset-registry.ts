@@ -152,10 +152,19 @@ export function listPresets(dir: string = presetsDir()): PresetSummary[] {
 
 /** One `policyUpdateArgs` options object per (rule, port) — what add-rule would be given by hand. */
 export function presetUpdateOptions(preset: EgressPreset): { rule: string; options: PolicyUpdateOptions }[] {
-  return preset.rules.flatMap((rule) =>
-    rule.ports.map((port) => ({
-      rule: rule.name,
-      options: { addEndpoint: [`${rule.host}:${port}`], binary: [...rule.binaries], ruleName: rule.name },
-    })),
-  );
+  return preset.rules.flatMap((rule) => egressRuleUpdateOptions(rule).map((options) => ({ rule: rule.name, options })));
+}
+
+/**
+ * One EgressRule as live `openshell policy update` options: one call per port
+ * (`--add-endpoint host:port --binary … --rule-name <name>`), because v0.1.2
+ * takes `--rule-name` with exactly one `--add-endpoint`; same-name calls merge
+ * into one rule. Shared by presets and `ncl openshell-network add`.
+ */
+export function egressRuleUpdateOptions(rule: EgressRule): PolicyUpdateOptions[] {
+  return rule.ports.map((port) => ({
+    addEndpoint: [`${rule.host}:${port}`],
+    binary: [...rule.binaries],
+    ruleName: rule.name,
+  }));
 }

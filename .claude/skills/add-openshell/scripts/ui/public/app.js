@@ -323,6 +323,7 @@ loaders.network = async () => {
                       `/api/groups/network?group=${encodeURIComponent(group())}&name=${encodeURIComponent(r.name)}`,
                     );
                     if (r2.status !== 200) alert(r2.data.error || 'Failed');
+                    else liveOutcome($('net-result'), r2.data);
                     await loaders.network();
                   }),
               },
@@ -349,10 +350,26 @@ $('net-add').addEventListener('click', (e) =>
     });
     const out = $('net-result');
     if (status !== 200) return fail(out, data);
-    out.replaceChildren(el('p', { class: 'ok' }, data.message || 'Added.'));
+    liveOutcome(out, data);
     await loaders.network();
   }),
 );
+
+// Saved durably either way; live apply is per running sandbox and may partly fail.
+function liveOutcome(out, data) {
+  const live = data.live || [];
+  const failed = live.filter((l) => !l.ok);
+  out.replaceChildren(
+    el('p', { class: failed.length ? 'bad' : 'ok' }, data.message || 'Saved.'),
+    live.length
+      ? table(
+          ['Running sandbox', 'Live apply'],
+          live.map((l) => el('tr', {}, el('td', {}, l.sandbox), el('td', {}, l.ok ? 'applied' : `failed: ${l.error}`))),
+          '',
+        )
+      : null,
+  );
+}
 
 // ---- Pending approvals tab -----------------------------------------------------
 loaders.approvals = async () => {

@@ -82,7 +82,8 @@ describe('registry CRUD', () => {
 });
 
 describe('ncl openshell-provider-profile', () => {
-  const run = (command: string, args: Record<string, unknown>, ctx: CallerContext = host) => dispatch({ id: 'r', command, args }, ctx);
+  const run = (command: string, args: Record<string, unknown>, ctx: CallerContext = host) =>
+    dispatch({ id: 'r', command, args }, ctx);
 
   it('create / list / delete, scriptable; operator-only; approval-tier writes', async () => {
     const names = listCommands()
