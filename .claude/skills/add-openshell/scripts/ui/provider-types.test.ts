@@ -160,6 +160,7 @@ describe('/api/types and /api/gateway', () => {
       runOpenShell: runOpenShell as unknown as UiDeps['runOpenShell'],
       dispatchPolicy: vi.fn(),
       dispatchNcl: vi.fn(async () => ({ ok: true, data: { profiles: [] } })),
+      restartGroup: vi.fn(),
       runCredentialScript: vi.fn(),
       checkCredentials: () => ({ credentials: 'configured', credentialSource: 'running-service:oauth' }),
       gatewayKind: () => 'openshell',

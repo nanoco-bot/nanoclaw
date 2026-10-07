@@ -497,10 +497,19 @@ $('attach-submit').addEventListener('click', (e) =>
       name,
       type: existing ? '' : id,
       ...(existing ? {} : { credentials }),
+      restart: $('attach-restart').checked,
     });
     for (const i of $('attach-creds').querySelectorAll('input')) i.value = '';
     if (!ok) return toast('Could not attach', data.error, 'bad');
-    liveToast(data, `Attached ${name}`);
+    if (data.restart && data.restart.ok)
+      toast(`Attached ${name}`, 'The agent was restarted with the key; it picks up from your next message.');
+    else if (data.restart)
+      toast(
+        `Attached ${name}, but the agent was not restarted`,
+        `${data.restart.error}. The key reaches it once its sandbox restarts.`,
+        'warn',
+      );
+    else liveToast(data, `Attached ${name}`);
     $('attach-card').hidden = true;
     await loaders.providers();
   }),

@@ -72,6 +72,11 @@ export interface UiDeps {
    * central DB. Same validation and storage as `ncl` itself.
    */
   dispatchNcl(frame: PolicyFrame): Promise<DispatchResult>;
+  /**
+   * `ncl groups restart --id <group>` on the HOST (over its ncl socket): the
+   * host process owns the containers, so this process cannot restart them.
+   */
+  restartGroup(agentGroupId: string): Promise<DispatchResult>;
   /** The add-openshell skill's `scripts/auth.ts claude` with this environment. */
   runCredentialScript(env: NodeJS.ProcessEnv): Promise<ExecResult>;
   /** setup/verify.ts checkCredentials() for this install. */
@@ -341,7 +346,18 @@ export function createHandler(deps: UiDeps): (req: IncomingMessage, res: ServerR
           },
           secrets,
         );
-        send(res, 200, { ok: true, group, ...(data as object) });
+        // A provider attached live reaches new processes only; the agent's own
+        // process keeps the environment it started with. Restarting gives it a
+        // sandbox created with the provider. Never undoes the attach.
+        const live = ((data as { live?: { ok: boolean }[] }).live ?? []).filter((l) => l.ok);
+        let restart: { ok: boolean; restarted?: number; error?: string } | undefined;
+        if (body.restart === true && live.length > 0) {
+          const r = await deps.restartGroup(group.id);
+          restart = r.ok
+            ? { ok: true, restarted: Number((r.data as { restarted?: unknown })?.restarted ?? 0) }
+            : { ok: false, error: r.error?.message ?? 'restart failed' };
+        }
+        send(res, 200, { ok: true, group, ...(data as object), ...(restart ? { restart } : {}) });
         return;
       }
       if (method === 'DELETE') {

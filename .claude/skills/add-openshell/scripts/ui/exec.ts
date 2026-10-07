@@ -23,6 +23,7 @@ import { sandboxName } from '../../../../../src/drivers/openshell/realize.js';
 import { settingsFromEnv } from '../../../../../src/drivers/openshell/settings.js';
 import { getInstallSlug } from '../../../../../src/install-slug.js';
 import { readEnvFile } from '../../../../../src/env.js';
+import { SocketTransport } from '../../../../../src/cli/socket-client.js';
 import { credentialScriptArgs, type PolicyFrame } from './commands.js';
 import type { DispatchResult, ExecResult, UiDeps } from './routes.js';
 
@@ -145,6 +146,20 @@ export function realDeps(projectRoot: string = PROJECT_ROOT, run: ExecFileLike =
         return (await loadNclDispatch(projectRoot))(frame);
       } catch (err) {
         return { ok: false, error: { code: 'unavailable', message: (err as Error).message } };
+      }
+    },
+    async restartGroup(agentGroupId) {
+      // The host owns the containers; this process does not. Ask it over the
+      // ncl socket, as the host caller (filesystem access to data/ is the gate).
+      try {
+        const res = await new SocketTransport(path.join(projectRoot, 'data', 'ncl.sock')).sendFrame({
+          id: `ui-restart-${randomUUID()}`,
+          command: 'groups-restart',
+          args: { id: agentGroupId },
+        });
+        return res.ok ? { ok: true, data: res.data } : { ok: false, error: res.error };
+      } catch (err) {
+        return { ok: false, error: { code: 'host-unreachable', message: (err as Error).message } };
       }
     },
     runCredentialScript(env) {

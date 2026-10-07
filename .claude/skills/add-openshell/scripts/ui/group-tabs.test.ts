@@ -112,7 +112,11 @@ describe('groupAudit', () => {
 let server: http.Server;
 let base: string;
 let dir: string;
-let deps: UiDeps & { dispatchNcl: ReturnType<typeof vi.fn>; dispatchPolicy: ReturnType<typeof vi.fn> };
+let deps: UiDeps & {
+  dispatchNcl: ReturnType<typeof vi.fn>;
+  dispatchPolicy: ReturnType<typeof vi.fn>;
+  restartGroup: ReturnType<typeof vi.fn>;
+};
 let store: { providers: Record<string, unknown[]>; rules: Record<string, unknown[]> };
 
 async function call(method: string, url: string, body?: unknown) {
@@ -126,6 +130,8 @@ async function call(method: string, url: string, body?: unknown) {
 }
 
 /** A stand-in for the in-process ncl commands, backed by a tiny in-memory store. */
+/** What the next fake attach reports as its live apply. */
+let liveResult: { sandbox: string; ok: boolean }[] = [];
 async function fakeNcl(frame: PolicyFrame): Promise<DispatchResult> {
   const a = frame.args as Record<string, any>;
   switch (frame.command) {
@@ -144,7 +150,7 @@ async function fakeNcl(frame: PolicyFrame): Promise<DispatchResult> {
         type: a.type ?? null,
         credentialKeys: Object.keys(a.credentials ?? {}),
       });
-      return { ok: true, data: { message: `Attached ${a.openshell_provider}` } };
+      return { ok: true, data: { message: `Attached ${a.openshell_provider}`, live: liveResult } };
     case 'openshell-provider-detach':
       store.providers[a.group] = (store.providers[a.group] ?? []).filter((p: any) => p.name !== a.openshell_provider);
       return { ok: true, data: { message: 'Detached' } };
@@ -182,6 +188,7 @@ beforeEach(async () => {
       }),
     ),
     dispatchNcl: vi.fn(fakeNcl),
+    restartGroup: vi.fn(async () => ({ ok: true, data: { restarted: 1 } })),
     runCredentialScript: vi.fn(),
     checkCredentials: vi.fn(() => ({ credentials: 'configured', credentialSource: 'running-service:oauth' })),
     gatewayKind: () => 'openshell',
@@ -239,6 +246,24 @@ describe('group routes', () => {
     expect((await call('GET', '/api/groups/providers?group=ag-2')).json.providers).toEqual([]);
     expect((await call('DELETE', '/api/groups/providers?group=ag-1&name=gh-alice')).status).toBe(200);
     expect((await call('GET', '/api/groups/providers?group=ag-1')).json.providers).toEqual([]);
+  });
+
+  it('attach with restart: the host restarts the group only when asked and the attach reached a running sandbox', async () => {
+    liveResult = [];
+    let r = await call('POST', '/api/groups/providers', { group: 'ag-1', name: 'a1', type: '', restart: true });
+    expect(r.json.restart).toBeUndefined(); // nothing running: the next sandbox gets it anyway
+    liveResult = [{ sandbox: 'sb-1', ok: true }];
+    r = await call('POST', '/api/groups/providers', { group: 'ag-1', name: 'a2', type: '' });
+    expect(r.json.restart).toBeUndefined(); // not asked
+    expect(deps.restartGroup).not.toHaveBeenCalled();
+    r = await call('POST', '/api/groups/providers', { group: 'ag-1', name: 'a3', type: '', restart: true });
+    expect(deps.restartGroup).toHaveBeenCalledWith('ag-1');
+    expect(r.json.restart).toEqual({ ok: true, restarted: 1 });
+    deps.restartGroup.mockResolvedValueOnce({ ok: false, error: { code: 'x', message: 'host unreachable' } });
+    r = await call('POST', '/api/groups/providers', { group: 'ag-1', name: 'a4', type: '', restart: true });
+    expect(r.status).toBe(200); // attached regardless
+    expect(r.json.restart).toEqual({ ok: false, error: 'host unreachable' });
+    liveResult = [];
   });
 
   it('attach-only (no type) sends no credentials; an ncl refusal is a 400 with the reason, scrubbed', async () => {

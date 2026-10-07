@@ -18,6 +18,7 @@ let deps: UiDeps & {
   runOpenShell: ReturnType<typeof vi.fn>;
   dispatchPolicy: ReturnType<typeof vi.fn>;
   dispatchNcl: ReturnType<typeof vi.fn>;
+  restartGroup: ReturnType<typeof vi.fn>;
   runCredentialScript: ReturnType<typeof vi.fn>;
   checkCredentials: ReturnType<typeof vi.fn>;
 };
@@ -50,6 +51,7 @@ beforeEach(async () => {
     runOpenShell: vi.fn(async () => exec()),
     dispatchPolicy: vi.fn(async () => policyOk('')),
     dispatchNcl: vi.fn(async () => ({ ok: true, data: { profiles: [] } })),
+    restartGroup: vi.fn(async () => ({ ok: true, data: { restarted: 1 } })),
     runCredentialScript: vi.fn(async () => exec('stored')),
     checkCredentials: vi.fn(() => ({ credentials: 'configured', credentialSource: 'running-service:api-key' })),
     gatewayKind: () => 'openshell',
