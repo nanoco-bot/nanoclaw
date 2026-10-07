@@ -76,7 +76,8 @@ describe('static page', () => {
     const page = await call('GET', '/');
     expect(page.status).toBe(200);
     expect(page.type).toMatch(/text\/html/);
-    for (const id of ['credential', 'group']) expect(page.text).toContain(`<section id="${id}">`);
+    expect(page.text).toMatch(/<section id="credential"[ >]/);
+    expect(page.text).toMatch(/<section id="group"[ >]/);
     for (const tab of ['providers', 'network', 'approvals', 'audit']) {
       expect(page.text).toContain(`id="tab-${tab}"`);
       expect(page.text).toContain(`data-tab="${tab}"`);
@@ -467,9 +468,17 @@ describe('custom provider profiles (templates)', () => {
     expect(r.json).toMatchObject({ ok: true, generic: false, missingDeclaredCredentials: ['ACME_API_KEY'] });
   });
 
-  it('the page has the template select and the save-profile form', async () => {
+  it('the page has the attach form and the new-service-type form (real OpenShell profiles, /api/types)', async () => {
     const page = await call('GET', '/');
-    for (const id of ['prov-type', 'profile-save', 'profile-id', 'profile-creds', 'profile-delete'])
+    for (const id of [
+      'attach-type',
+      'attach-submit',
+      'type-label',
+      'type-host',
+      'type-key',
+      'type-yaml',
+      'type-submit',
+    ])
       expect(page.text).toContain(`id="${id}"`);
   });
 });

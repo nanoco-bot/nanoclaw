@@ -9,9 +9,11 @@
  */
 import fs from 'node:fs';
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import os from 'node:os';
 import path from 'node:path';
 
 import {
+  chunkEndpoints,
   credentialScriptEnv,
   missingDeclaredCredentials,
   parseCredentialSource,
@@ -37,6 +39,15 @@ import {
 } from './group-view.js';
 import { ACTOR, appendDecision, mergeHistory, readDecisions } from './history.js';
 import { isGenericType, mergeProfiles, type CustomProfileInput, type ProfileTemplate } from './profiles.js';
+import {
+  buildProfileYaml,
+  parseGatewayTypes,
+  profileDeleteArgs,
+  profileImportArgs,
+  profileListArgs,
+  yamlProfileId,
+  type NewTypeInput,
+} from './provider-types.js';
 
 export interface ExecResult {
   code: number | null;
@@ -225,6 +236,17 @@ export function createHandler(deps: UiDeps): (req: IncomingMessage, res: ServerR
     return { templates: mergeProfiles(custom) };
   }
 
+  /** The provider types the OpenShell gateway knows; a failed listing is reported, not thrown. */
+  async function gatewayTypes(): Promise<{ types: ReturnType<typeof parseGatewayTypes>; error?: string }> {
+    const run = await deps.runOpenShell(profileListArgs(), {});
+    if (run.code !== 0) return { types: [], error: (run.stderr || run.stdout).trim() || 'profile list failed' };
+    try {
+      return { types: parseGatewayTypes(run.stdout) };
+    } catch (err) {
+      return { types: [], error: (err as Error).message };
+    }
+  }
+
   async function decide(decision: 'approved' | 'rejected', body: Record<string, unknown>) {
     const frame =
       decision === 'approved'
@@ -392,7 +414,7 @@ export function createHandler(deps: UiDeps): (req: IncomingMessage, res: ServerR
         sandboxes: live,
         status: frame.args.status,
         ...data,
-        chunks: parseRuleChunks(data.output),
+        chunks: parseRuleChunks(data.output).map((c) => ({ ...c, targets: chunkEndpoints(c) })),
         ...(result.ok ? {} : { error: result.error?.message }),
       });
       return;
@@ -423,6 +445,67 @@ export function createHandler(deps: UiDeps): (req: IncomingMessage, res: ServerR
         logs: { changes: deps.changeLog, decisions: deps.decisionLog },
         entries: groupAudit({ group, sandboxes: all, changes: readChangeLog(deps.changeLog), decisions, remote }),
         ...(remoteError ? { remoteError } : {}),
+      });
+      return;
+    }
+
+    // ---- OpenShell provider types (gateway profiles) ------------------------------
+    if (url.pathname === '/api/types') {
+      if (method === 'GET') {
+        send(res, 200, await gatewayTypes());
+        return;
+      }
+      if (method === 'POST') {
+        const body = await readJson(req);
+        let id: string;
+        let yaml: string;
+        try {
+          if (typeof body.yaml === 'string' && body.yaml.trim()) {
+            yaml = body.yaml;
+            id = yamlProfileId(yaml);
+          } else ({ id, yaml } = buildProfileYaml(body as unknown as NewTypeInput));
+        } catch (err) {
+          throw new HttpError(400, (err as Error).message);
+        }
+        if ((await gatewayTypes()).types.some((t) => t.id === id))
+          throw new HttpError(409, `OpenShell already has a provider type '${id}'; delete it first to replace it`);
+        // `profile import` reads a file; the profile holds no credential value.
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'openshell-profile-'));
+        const file = path.join(dir, `${id}.yaml`);
+        let run: ExecResult;
+        try {
+          fs.writeFileSync(file, yaml, { mode: 0o600 });
+          run = await deps.runOpenShell(profileImportArgs(file), {});
+        } finally {
+          fs.rmSync(dir, { recursive: true, force: true });
+        }
+        if (run.code !== 0)
+          throw new HttpError(400, (run.stderr || run.stdout).trim() || 'openshell provider profile import failed');
+        send(res, 200, { ok: true, id, yaml, ...(await gatewayTypes()) });
+        return;
+      }
+      if (method === 'DELETE') {
+        const args = input(() => profileDeleteArgs(url.searchParams.get('id') ?? ''));
+        const run = await deps.runOpenShell(args, {});
+        if (run.code !== 0)
+          throw new HttpError(400, (run.stderr || run.stdout).trim() || 'openshell provider profile delete failed');
+        send(res, 200, { ok: true, ...(await gatewayTypes()) });
+        return;
+      }
+    }
+
+    if (method === 'GET' && url.pathname === '/api/gateway') {
+      const [status, version] = await Promise.all([
+        deps.runOpenShell(['status'], {}),
+        deps.runOpenShell(['--version'], {}),
+      ]);
+      // eslint-disable-next-line no-control-regex
+      const text = status.stdout.replace(/\x1b\[[0-9;]*m/g, '');
+      send(res, 200, {
+        connected: status.code === 0 && /Status:\s*Connected/i.test(text),
+        version: (version.stdout.match(/\d+\.\d+\.\d+\S*/) ?? [''])[0],
+        server: (text.match(/Server:\s*(\S+)/) ?? [, ''])[1],
+        ...(status.code === 0 ? {} : { error: (status.stderr || status.stdout).trim().split('\n').pop() }),
       });
       return;
     }

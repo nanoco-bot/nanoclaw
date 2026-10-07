@@ -221,6 +221,20 @@ export interface RuleChunk {
   confidence?: string;
   rationale?: string;
   security?: string;
+  /** `host:port [L4], …` as OpenShell prints it. */
+  endpoints?: string;
+  binaries?: string;
+  hits?: string;
+}
+
+/** `public-api.granola.ai:443 [L4], x.io:8443` → [{host, port}]. Unparseable parts are skipped. */
+export function chunkEndpoints(chunk: RuleChunk): { host: string; port: number }[] {
+  return String(chunk.endpoints ?? '')
+    .split(',')
+    .map((part) => part.replace(/\[[^\]]*\]/g, '').trim())
+    .map((part) => part.match(/^([^\s:]+):(\d{1,5})$/))
+    .filter((m): m is RegExpMatchArray => m !== null)
+    .map((m) => ({ host: m[1], port: Number(m[2]) }));
 }
 
 // eslint-disable-next-line no-control-regex
@@ -240,6 +254,9 @@ export function parseRuleChunks(text: string): RuleChunk[] {
     confidence: 'confidence',
     rationale: 'rationale',
     security: 'security',
+    endpoints: 'endpoints',
+    binaries: 'binaries',
+    hits: 'hits',
   };
   for (const raw of String(text ?? '')
     .replace(ANSI, '')

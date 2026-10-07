@@ -3,139 +3,322 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>NanoClaw · OpenShell setup</title>
+<title>NanoClaw · OpenShell</title>
 <style>
-  :root { font-family: system-ui, sans-serif; color: #1c1c1c; background: #f6f6f4; }
-  body { max-width: 980px; margin: 0 auto; padding: 1rem 1.25rem 3rem; }
-  h1 { font-size: 1.3rem; margin: .5rem 0 0; }
-  .sub { color: #666; margin: .25rem 0 1rem; font-size: .9rem; }
-  section { background: #fff; border: 1px solid #ddd; border-radius: 8px; padding: 1rem 1.1rem; margin: 1rem 0; }
-  h2 { font-size: 1.05rem; margin: 0 0 .6rem; }
-  label { display: block; font-size: .85rem; margin: .5rem 0 .2rem; color: #333; }
-  input, select, textarea { font: inherit; padding: .35rem .45rem; border: 1px solid #bbb; border-radius: 4px; }
-  input[type=text], input[type=password], select { width: 100%; max-width: 32rem; box-sizing: border-box; }
-  button { font: inherit; padding: .35rem .8rem; border-radius: 4px; border: 1px solid #555; background: #222; color: #fff; cursor: pointer; margin: .5rem .4rem 0 0; }
-  button.secondary { background: #fff; color: #222; }
-  button:disabled { opacity: .5; cursor: progress; }
-  pre { background: #111; color: #e8e8e8; padding: .6rem .7rem; border-radius: 4px; overflow: auto; max-height: 22rem; font-size: .8rem; white-space: pre-wrap; }
-  .row { display: flex; gap: .4rem; align-items: center; margin: .25rem 0; }
-  .row input { max-width: 14rem; }
-  .ok { color: #116611; font-weight: 600; }
-  .bad { color: #a40000; font-weight: 600; }
-  .note { background: #fff4d6; border: 1px solid #e0b400; padding: .6rem .7rem; border-radius: 4px; margin: .6rem 0; font-weight: 500; }
-  .hint { color: #666; font-size: .82rem; }
-  table { border-collapse: collapse; width: 100%; font-size: .85rem; margin-top: .5rem; }
-  th, td { text-align: left; border-bottom: 1px solid #eee; padding: .35rem .3rem; vertical-align: top; }
-  .badge { display: inline-block; padding: .05rem .4rem; border-radius: 3px; background: #eee; font-size: .78rem; }
-  .tabs { display: flex; gap: .25rem; margin: 1rem 0 0; }
-  .tabs button { margin: 0; border-radius: 6px 6px 0 0; background: #fff; color: #222; border-color: #ccc; }
-  .tabs button[aria-selected=true] { background: #222; color: #fff; }
-  .tabpanel { margin-top: 0; border-top-left-radius: 0; }
-  .badge.applied, .badge.approved { background: #dcefdc; } .badge.rejected, .badge.failed { background: #f6d6d6; }
+  :root {
+    --bg: #f5f6f8; --surface: #fff; --surface-2: #f0f2f5; --border: #e2e5ea; --text: #16181d; --muted: #646b78;
+    --accent: #3b5bdb; --accent-ink: #fff; --accent-soft: #e8edff;
+    --ok: #1f8a4c; --ok-soft: #e3f5ea; --warn: #b26a00; --warn-soft: #fff3dc; --bad: #c0362c; --bad-soft: #fde8e6;
+    --shadow: 0 1px 2px rgb(16 24 40 / .06), 0 1px 3px rgb(16 24 40 / .08);
+    --radius: 10px; --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1115; --surface: #171a21; --surface-2: #1f232c; --border: #2a2f3a; --text: #e7e9ee; --muted: #9aa2b1;
+      --accent: #7c93ff; --accent-ink: #0f1115; --accent-soft: #232a45;
+      --ok: #4ccf86; --ok-soft: #16301f; --warn: #f0b44c; --warn-soft: #33270f; --bad: #ff7a6e; --bad-soft: #3a1b18;
+      --shadow: none; color-scheme: dark;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; background: var(--bg); color: var(--text); }
+  code, .mono { font-family: var(--mono); font-size: .92em; }
+  a { color: var(--accent); }
+
+  /* header */
+  header { position: sticky; top: 0; z-index: 5; background: var(--surface); border-bottom: 1px solid var(--border); }
+  .bar { max-width: 1040px; margin: 0 auto; padding: .7rem 1rem; display: flex; flex-wrap: wrap; gap: .6rem 1rem; align-items: center; }
+  .brand { font-weight: 650; font-size: 1.02rem; display: flex; align-items: center; gap: .5rem; }
+  .brand .logo { width: 26px; height: 26px; border-radius: 7px; background: var(--accent); color: var(--accent-ink); display: grid; place-items: center; font-size: .8rem; font-weight: 700; }
+  .grow { flex: 1; }
+  .group-pick { display: flex; align-items: center; gap: .45rem; }
+  .group-pick label { color: var(--muted); font-size: .85rem; white-space: nowrap; }
+  .pills { max-width: 1040px; margin: 0 auto; padding: 0 1rem .7rem; display: flex; flex-wrap: wrap; gap: .45rem; }
+  .pill { display: inline-flex; align-items: center; gap: .4rem; padding: .22rem .65rem; border-radius: 999px; background: var(--surface-2); border: 1px solid var(--border); font-size: .82rem; color: var(--text); }
+  .pill .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+  .pill.ok .dot { background: var(--ok); } .pill.bad .dot { background: var(--bad); } .pill.warn .dot { background: var(--warn); }
+  .pill button.link { padding: 0; margin-left: .15rem; }
+
+  main { max-width: 1040px; margin: 0 auto; padding: 1rem 1rem 4rem; }
+
+  /* tabs */
+  .tabs { display: flex; gap: .25rem; border-bottom: 1px solid var(--border); margin-bottom: 1rem; overflow-x: auto; }
+  .tabs button { background: none; border: 0; border-bottom: 2px solid transparent; color: var(--muted); padding: .6rem .8rem; font: inherit; font-weight: 550; cursor: pointer; white-space: nowrap; display: inline-flex; gap: .4rem; align-items: center; border-radius: 0; margin: 0; }
+  .tabs button:hover { color: var(--text); }
+  .tabs button[aria-selected=true] { color: var(--accent); border-bottom-color: var(--accent); }
+  .count { min-width: 1.35rem; padding: 0 .38rem; border-radius: 999px; background: var(--surface-2); color: var(--muted); font-size: .75rem; line-height: 1.35rem; text-align: center; }
+  .count.attn { background: var(--warn); color: #fff; }
+
+  /* cards and layout */
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); padding: 1rem 1.1rem; margin-bottom: 1rem; }
+  .card-head { display: flex; align-items: center; gap: .6rem; flex-wrap: wrap; margin-bottom: .7rem; }
+  .card-head h2 { font-size: 1rem; margin: 0; }
+  .card-head .grow + * { margin: 0; }
+  h3 { font-size: .92rem; margin: 1rem 0 .4rem; }
+  .lead { color: var(--muted); margin: -.35rem 0 .8rem; font-size: .88rem; }
+  .muted { color: var(--muted); }
+  .small { font-size: .82rem; }
+  .empty { text-align: center; color: var(--muted); padding: 1.4rem .5rem; border: 1px dashed var(--border); border-radius: 8px; }
+  .empty strong { display: block; color: var(--text); margin-bottom: .2rem; }
+
+  /* forms */
+  .grid { display: grid; gap: .8rem 1rem; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); }
+  .field { display: flex; flex-direction: column; gap: .25rem; min-width: 0; }
+  .field.wide { grid-column: 1 / -1; }
+  .field > span { font-size: .82rem; font-weight: 550; }
+  .field small { color: var(--muted); font-size: .78rem; }
+  .field > .seg, .field > .row { align-self: flex-start; }
+  input, select, textarea { font: inherit; color: var(--text); background: var(--surface); border: 1px solid var(--border); border-radius: 7px; padding: .45rem .6rem; width: 100%; min-width: 0; }
+  textarea { font-family: var(--mono); font-size: .82rem; min-height: 14rem; }
+  input:focus, select:focus, textarea:focus, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .checks { display: flex; flex-wrap: wrap; gap: .4rem; }
+  .check { display: inline-flex; align-items: center; gap: .35rem; padding: .3rem .6rem; border: 1px solid var(--border); border-radius: 999px; cursor: pointer; font-size: .85rem; user-select: none; }
+  .check input { width: auto; margin: 0; }
+  .check:has(input:checked) { border-color: var(--accent); background: var(--accent-soft); }
+  .seg { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+  .seg label { padding: .35rem .7rem; cursor: pointer; font-size: .85rem; border-right: 1px solid var(--border); }
+  .seg label:last-child { border-right: 0; }
+  .seg input { position: absolute; opacity: 0; pointer-events: none; }
+  .seg label:has(input:checked) { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+  .row { display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; }
+  .actions { display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; margin-top: 1rem; }
+
+  /* buttons */
+  button { font: inherit; font-weight: 550; padding: .45rem .9rem; border-radius: 7px; border: 1px solid transparent; background: var(--accent); color: var(--accent-ink); cursor: pointer; }
+  button:hover { filter: brightness(1.06); }
+  button.ghost { background: var(--surface); color: var(--text); border-color: var(--border); }
+  button.danger { background: var(--surface); color: var(--bad); border-color: var(--border); }
+  button.danger.solid { background: var(--bad); color: #fff; border-color: var(--bad); }
+  button.ok { background: var(--ok); color: #fff; }
+  button.link { background: none; border: 0; color: var(--accent); padding: .1rem .2rem; font-weight: 550; }
+  button.sm { padding: .25rem .6rem; font-size: .82rem; }
+  button:disabled { opacity: .55; cursor: progress; }
+
+  /* lists */
+  .list { display: flex; flex-direction: column; gap: .5rem; }
+  .item { display: flex; align-items: center; gap: .8rem; padding: .7rem .8rem; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); flex-wrap: wrap; }
+  .item .icon { width: 34px; height: 34px; border-radius: 8px; display: grid; place-items: center; background: var(--accent-soft); color: var(--accent); font-weight: 700; flex: none; }
+  .item .body { flex: 1; min-width: 12rem; }
+  .item .title { font-weight: 600; display: flex; gap: .45rem; align-items: center; flex-wrap: wrap; }
+  .item .meta { color: var(--muted); font-size: .82rem; }
+  .tag { display: inline-block; padding: .05rem .45rem; border-radius: 5px; background: var(--surface-2); border: 1px solid var(--border); font-size: .76rem; font-family: var(--mono); color: var(--text); }
+  .badge { display: inline-block; padding: .05rem .5rem; border-radius: 999px; font-size: .74rem; font-weight: 600; background: var(--surface-2); color: var(--muted); }
+  .badge.ok { background: var(--ok-soft); color: var(--ok); } .badge.bad { background: var(--bad-soft); color: var(--bad); } .badge.warn { background: var(--warn-soft); color: var(--warn); }
+  .confirm { display: inline-flex; gap: .35rem; align-items: center; font-size: .85rem; }
+
+  /* proposal cards */
+  .proposal .route { font-family: var(--mono); font-size: .9rem; }
+  .proposal .route b { font-weight: 650; }
+  .proposal .why { color: var(--muted); font-size: .85rem; margin-top: .15rem; }
+  .proposal .btns { display: flex; gap: .4rem; flex-wrap: wrap; align-items: center; }
+
+  /* activity */
+  .feed { list-style: none; margin: 0; padding: 0; }
+  .feed li { display: grid; grid-template-columns: 7.5rem 1fr auto; gap: .8rem; padding: .55rem .2rem; border-bottom: 1px solid var(--border); align-items: start; }
+  .feed .when { color: var(--muted); font-size: .8rem; }
+  .feed .what { font-weight: 550; }
+  .feed .detail { color: var(--muted); font-size: .82rem; word-break: break-word; }
+
+  /* notes, details, code */
+  .note { background: var(--warn-soft); color: var(--text); border: 1px solid var(--border); border-left: 3px solid var(--warn); padding: .55rem .75rem; border-radius: 7px; font-size: .85rem; margin: .5rem 0 .8rem; }
+  .note.info { background: var(--accent-soft); border-left-color: var(--accent); }
+  details > summary { cursor: pointer; color: var(--muted); font-size: .85rem; margin: .4rem 0; }
+  pre { background: var(--surface-2); border: 1px solid var(--border); padding: .6rem .75rem; border-radius: 7px; overflow: auto; max-height: 20rem; font: .78rem/1.45 var(--mono); white-space: pre-wrap; word-break: break-word; }
+  .live { margin-top: .5rem; font-size: .84rem; }
+  .live div { display: flex; gap: .4rem; align-items: baseline; }
+
+  /* toasts */
+  #toasts { position: fixed; right: 1rem; bottom: 1rem; display: flex; flex-direction: column; gap: .5rem; z-index: 20; max-width: min(28rem, calc(100vw - 2rem)); }
+  .toast { background: var(--surface); border: 1px solid var(--border); border-left: 4px solid var(--ok); box-shadow: 0 8px 24px rgb(0 0 0 / .15); border-radius: 8px; padding: .65rem .8rem; font-size: .87rem; cursor: pointer; }
+  .toast.bad { border-left-color: var(--bad); } .toast.warn { border-left-color: var(--warn); }
+  .toast .t { font-weight: 600; }
+
+  /* dialog */
+  dialog { border: 1px solid var(--border); border-radius: 12px; padding: 0; background: var(--surface); color: var(--text); width: min(32rem, calc(100vw - 2rem)); box-shadow: 0 20px 50px rgb(0 0 0 / .25); }
+  dialog::backdrop { background: rgb(10 12 16 / .45); }
+  dialog .card { margin: 0; border: 0; box-shadow: none; }
+
+  .spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite; vertical-align: -2px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  [hidden] { display: none !important; }
+  @media (max-width: 640px) {
+    .feed li { grid-template-columns: 1fr; gap: .15rem; }
+    .bar { padding: .6rem .75rem; } main { padding: .75rem .75rem 4rem; }
+  }
 </style>
 </head>
 <body>
-<h1>NanoClaw · OpenShell setup</h1>
-<p class="sub">Operator console for this install. Every action runs the existing <code>openshell</code> / <code>ncl</code> commands; their output is shown as-is.</p>
-
-<section id="credential">
-  <h2>Claude credential <span class="badge">install-wide</span></h2>
-  <p class="hint">One credential for the whole install: the OpenShell model relay reads it from this install's service environment (systemd drop-in or LaunchAgent plist), never from <code>.env</code>. Confirmation is read back from where the relay reads it.</p>
-  <div id="cred-status" class="hint">Checking…</div>
-  <label for="cred-kind">Credential type</label>
-  <select id="cred-kind">
-    <option value="oauth">Claude OAuth token (sk-ant-oat…)</option>
-    <option value="api-key">Anthropic API key (sk-ant-api…)</option>
-  </select>
-  <label for="cred-value">Value</label>
-  <input id="cred-value" type="password" autocomplete="off" spellcheck="false">
-  <div><button id="cred-save">Save credential</button></div>
-  <div id="cred-result"></div>
-</section>
-
-<section id="group">
-  <h2>Agent group</h2>
-  <select id="group-select"><option value="">Loading…</option></select>
-  <p class="hint">Providers and network paths belong to the group: every sandbox it gets from now on is created with them. Changes are also applied live to the group's running sandboxes, and each one is reported as applied or failed.</p>
-</section>
-
-<nav class="tabs" role="tablist">
-  <button role="tab" data-tab="providers" aria-selected="true">Providers</button>
-  <button role="tab" data-tab="network" aria-selected="false">Network paths</button>
-  <button role="tab" data-tab="approvals" aria-selected="false">Pending approvals</button>
-  <button role="tab" data-tab="audit" aria-selected="false">Audit log</button>
-</nav>
-
-<section id="tab-providers" class="tabpanel" role="tabpanel">
-  <h2>OpenShell providers for this group</h2>
-  <div id="prov-attached"></div>
-  <h2>Attach a provider</h2>
-  <label for="prov-name">Provider name</label>
-  <input id="prov-name" type="text" placeholder="e.g. github-alice">
-  <label for="prov-type">Create it in the gateway as</label>
-  <select id="prov-type"></select>
-  <div id="prov-custom-wrap" hidden>
-    <label for="prov-custom">Type id</label>
-    <input id="prov-custom" type="text" placeholder="a profile imported into the gateway">
+<header>
+  <div class="bar">
+    <div class="brand"><span class="logo" aria-hidden="true">NC</span> NanoClaw · OpenShell</div>
+    <div class="grow"></div>
+    <section id="group" class="group-pick">
+      <label for="group-select">Agent group</label>
+      <select id="group-select"><option value="">Loading…</option></select>
+    </section>
   </div>
-  <p id="prov-type-hint" class="hint"></p>
-  <div id="prov-create-fields">
-    <label>Credentials <span class="hint">(env-var name + value; values go only to the OpenShell gateway)</span></label>
-    <div id="prov-creds"></div>
-    <button class="secondary" id="prov-add-cred" type="button">+ credential</button>
-    <label>Config <span class="hint">(KEY=VALUE, optional)</span></label>
-    <div id="prov-config"></div>
-    <button class="secondary" id="prov-add-config" type="button">+ config</button>
+  <div class="pills" aria-live="polite">
+    <span class="pill" id="pill-gateway"><span class="dot"></span><span class="txt">Gateway…</span></span>
+    <span class="pill" id="pill-cred"><span class="dot"></span><span class="txt">Claude…</span> <button class="link small" id="cred-open" type="button">Change</button></span>
+    <span class="pill" id="pill-sandbox"><span class="dot"></span><span class="txt">Sandboxes…</span></span>
   </div>
-  <div>
-    <button id="prov-attach">Attach to group</button>
-    <button class="secondary" id="prov-list">List gateway providers</button>
-  </div>
-  <p id="profile-error" class="bad"></p>
-  <button class="secondary" id="profile-delete" type="button" hidden>Delete this custom profile</button>
-  <details id="profile-new">
-    <summary>Save a custom provider profile (template, install-wide)</summary>
-    <p class="hint">A hint for this form only: the OpenShell gateway still decides whether the type exists (import its profile with <code>openshell provider profile import</code>). No credential values are saved — names only.</p>
-    <label for="profile-id">Profile id</label><input id="profile-id" type="text" placeholder="acme-crm">
-    <label for="profile-label">Label</label><input id="profile-label" type="text" placeholder="ACME CRM">
-    <label for="profile-type">OpenShell --type <span class="hint">(default: the id)</span></label><input id="profile-type" type="text">
-    <label for="profile-creds">Credential env-var names <span class="hint">(comma-separated)</span></label><input id="profile-creds" type="text" placeholder="ACME_API_KEY">
-    <label for="profile-config">Config keys <span class="hint">(comma-separated)</span></label><input id="profile-config" type="text" placeholder="region">
-    <div><button class="secondary" id="profile-save" type="button">Save profile</button></div>
-  </details>
-  <div id="prov-result"></div>
-</section>
+</header>
 
-<section id="tab-network" class="tabpanel" role="tabpanel" hidden>
-  <h2>Network paths for this group</h2>
-  <p class="hint">Raw egress rules, independent of any provider: host, port(s), and the binaries allowed to connect.</p>
-  <div id="net-list"></div>
-  <label for="net-name">Rule name</label><input id="net-name" type="text" placeholder="crm_api">
-  <label for="net-host">Host</label><input id="net-host" type="text" placeholder="api.example.com">
-  <label for="net-ports">Port(s)</label><input id="net-ports" type="text" placeholder="443 or 443,8443">
-  <label for="net-binaries">Binaries <span class="hint">(absolute paths, comma-separated)</span></label><input id="net-binaries" type="text" placeholder="/usr/local/bin/node">
-  <div><button id="net-add">Add network path</button></div>
-  <div id="net-result"></div>
-</section>
+<main>
+  <nav class="tabs" role="tablist" aria-label="Group settings">
+    <button role="tab" data-tab="providers" aria-selected="true">Providers <span class="count" id="count-providers">–</span></button>
+    <button role="tab" data-tab="network" aria-selected="false">Network access <span class="count" id="count-network">–</span></button>
+    <button role="tab" data-tab="approvals" aria-selected="false">Approvals <span class="count" id="count-approvals">–</span></button>
+    <button role="tab" data-tab="audit" aria-selected="false">Activity</button>
+  </nav>
 
-<section id="tab-approvals" class="tabpanel" role="tabpanel" hidden>
-  <h2>Pending approvals</h2>
-  <p class="hint">Egress-rule proposals of one of the group's live sandboxes — by default the newest running one. Proposals cover network egress only.</p>
-  <label for="appr-sandbox">Sandbox</label>
-  <select id="appr-sandbox"><option value="">(default)</option></select>
-  <label for="appr-status">Show</label>
-  <select id="appr-status"><option>pending</option><option>approved</option><option>rejected</option></select>
-  <div><button id="appr-load">Load</button></div>
-  <div id="appr-result"></div>
-</section>
+  <!-- Providers ------------------------------------------------------------>
+  <section id="tab-providers" role="tabpanel">
+    <div class="card">
+      <div class="card-head">
+        <h2>Providers for <span class="group-name">this group</span></h2>
+        <div class="grow"></div>
+        <button id="attach-open" type="button">+ Attach provider</button>
+      </div>
+      <p class="lead">A provider gives the agent a credential for one service, plus network access to that service only. The key goes to OpenShell, never to the agent or NanoClaw.</p>
+      <div id="prov-attached"></div>
+    </div>
 
-<section id="tab-audit" class="tabpanel" role="tabpanel" hidden>
-  <h2>Audit log</h2>
-  <p class="hint">This group's provider, network-path and policy changes (ncl change log) and approve/reject decisions (this UI's decision log, plus ones OpenShell reports for its default sandbox), approved and denied alike.</p>
-  <div><button class="secondary" id="audit-load">Load audit log</button></div>
-  <div id="audit-result"></div>
-</section>
+    <div class="card" id="attach-card" hidden>
+      <div class="card-head"><h2>Attach a provider</h2><div class="grow"></div><button class="link" type="button" id="attach-close">Cancel</button></div>
+      <div class="grid">
+        <label class="field wide"><span>Service</span>
+          <select id="attach-type"></select>
+          <small id="attach-type-desc"></small>
+        </label>
+        <label class="field"><span>Provider name</span>
+          <input id="attach-name" type="text" autocomplete="off" spellcheck="false">
+          <small id="attach-name-hint">How it's listed; letters, digits and dashes.</small>
+        </label>
+      </div>
+      <div id="attach-creds" class="grid" style="margin-top:.8rem"></div>
+      <div class="actions">
+        <button id="attach-submit" type="button">Attach to <span class="group-name">group</span></button>
+        <span class="muted small">Takes effect in the running sandbox right away.</span>
+      </div>
+    </div>
 
+    <div class="card">
+      <div class="card-head">
+        <h2>Service types</h2> <span class="count" id="count-types">–</span>
+        <div class="grow"></div>
+        <button class="ghost" id="type-open" type="button">+ New service type</button>
+      </div>
+      <p class="lead">What OpenShell knows how to connect to: the hosts, the programs allowed to call them, and how the key is sent. Shared by every group on this install.</p>
+      <div id="types-list"></div>
+    </div>
+
+    <div class="card" id="type-card" hidden>
+      <div class="card-head"><h2>New service type</h2><div class="grow"></div>
+        <div class="seg" role="radiogroup" aria-label="How to define it">
+          <label><input type="radio" name="type-mode" value="form" checked> Simple</label>
+          <label><input type="radio" name="type-mode" value="yaml"> Paste YAML</label>
+        </div>
+        <button class="link" type="button" id="type-close">Cancel</button>
+      </div>
+      <div id="type-form">
+        <div class="grid">
+          <label class="field"><span>Service name</span><input id="type-label" type="text" placeholder="Granola"><small>Type id: <code id="type-id-preview">–</code></small></label>
+          <label class="field"><span>API host</span><input id="type-host" type="text" placeholder="public-api.granola.ai" spellcheck="false"><small>Just the host — no https:// or path.</small></label>
+          <label class="field"><span>Port</span><input id="type-port" type="number" value="443" min="1" max="65535"></label>
+          <div class="field wide"><span>The agent may</span>
+            <div class="seg" role="radiogroup">
+              <label><input type="radio" name="type-access" value="read-only"> Read only <span class="muted">(GET)</span></label>
+              <label><input type="radio" name="type-access" value="read-write" checked> Read &amp; write</label>
+              <label><input type="radio" name="type-access" value="full"> Anything</label>
+            </div>
+          </div>
+          <div class="field wide"><span>How the key is sent</span>
+            <div class="row">
+              <div class="seg" role="radiogroup">
+                <label><input type="radio" name="type-auth" value="bearer" checked> <code>Authorization: Bearer …</code></label>
+                <label><input type="radio" name="type-auth" value="header"> Custom header</label>
+              </div>
+              <input id="type-header" type="text" placeholder="x-api-key" style="max-width:12rem" hidden>
+            </div>
+          </div>
+          <label class="field"><span>Key variable</span><input id="type-key" type="text" placeholder="GRANOLA_API_KEY" spellcheck="false"><small>The agent sees this variable, holding a placeholder; OpenShell swaps in the real key on the way out.</small></label>
+          <div class="field wide"><span>Programs allowed to connect</span><div class="checks" id="type-bins"></div></div>
+        </div>
+      </div>
+      <div id="type-yaml-wrap" hidden>
+        <label class="field"><span>OpenShell provider profile (YAML)</span><textarea id="type-yaml" spellcheck="false" placeholder="id: my-service&#10;display_name: My service&#10;credentials: …"></textarea>
+          <small>Imported as-is with <code>openshell provider profile import</code>; OpenShell validates it.</small></label>
+      </div>
+      <div class="actions"><button id="type-submit" type="button">Create service type</button></div>
+    </div>
+  </section>
+
+  <!-- Network -------------------------------------------------------------->
+  <section id="tab-network" role="tabpanel" hidden>
+    <div class="card">
+      <div class="card-head"><h2>Network access for <span class="group-name">this group</span></h2></div>
+      <p class="lead">Hosts the agent may reach without a provider. Saved for every future sandbox and applied to the running one immediately.</p>
+      <div id="net-list"></div>
+    </div>
+    <div class="card">
+      <div class="card-head"><h2>Allow a host</h2></div>
+      <div class="grid">
+        <label class="field"><span>Host</span><input id="net-host" type="text" placeholder="api.example.com" spellcheck="false"></label>
+        <label class="field"><span>Port(s)</span><input id="net-ports" type="text" value="443" placeholder="443 or 443,8443"></label>
+        <label class="field"><span>Rule name</span><input id="net-name" type="text" placeholder="auto from host" spellcheck="false"></label>
+        <div class="field wide"><span>Programs allowed to connect</span><div class="checks" id="net-bins"></div></div>
+      </div>
+      <div class="actions"><button id="net-add" type="button">Allow</button></div>
+    </div>
+  </section>
+
+  <!-- Approvals ------------------------------------------------------------>
+  <section id="tab-approvals" role="tabpanel" hidden>
+    <div class="card">
+      <div class="card-head">
+        <h2>Blocked requests</h2>
+        <div class="grow"></div>
+        <div class="seg" role="radiogroup" aria-label="Show">
+          <label><input type="radio" name="appr-status" value="pending" checked> Waiting</label>
+          <label><input type="radio" name="appr-status" value="approved"> Allowed</label>
+          <label><input type="radio" name="appr-status" value="rejected"> Denied</label>
+        </div>
+        <select id="appr-sandbox" style="max-width:20rem" hidden></select>
+        <button class="ghost sm" id="appr-load" type="button">Refresh</button>
+      </div>
+      <p class="lead">When the agent tries a host it isn't allowed to reach, OpenShell blocks it and asks here. <b>Always allow</b> saves it for the group; <b>Just this sandbox</b> lasts until the sandbox is recreated.</p>
+      <div id="appr-result"></div>
+    </div>
+  </section>
+
+  <!-- Activity -------------------------------------------------------------->
+  <section id="tab-audit" role="tabpanel" hidden>
+    <div class="card">
+      <div class="card-head"><h2>Activity</h2><div class="grow"></div><button class="ghost sm" id="audit-load" type="button">Refresh</button></div>
+      <p class="lead">Every provider, network and approval change for this group — allowed and denied.</p>
+      <div id="audit-result"></div>
+    </div>
+  </section>
+</main>
+
+<dialog id="cred-dialog" aria-labelledby="cred-title">
+  <section id="credential" class="card">
+    <div class="card-head"><h2 id="cred-title">Claude credential</h2><span class="badge">whole install</span><div class="grow"></div><button class="link" type="button" id="cred-close">Close</button></div>
+    <p class="lead">Used by OpenShell's model relay for every agent. Stored in the service environment, never in <code>.env</code> or a sandbox.</p>
+    <p id="cred-status" class="small"></p>
+    <div class="grid">
+      <label class="field wide"><span>Type</span>
+        <select id="cred-kind"><option value="oauth">Claude OAuth token (sk-ant-oat…)</option><option value="api-key">Anthropic API key (sk-ant-api…)</option></select></label>
+      <label class="field wide"><span>Value</span><input id="cred-value" type="password" autocomplete="off" spellcheck="false"></label>
+    </div>
+    <div class="actions"><button id="cred-save" type="button">Save credential</button></div>
+    <div id="cred-result"></div>
+  </section>
+</dialog>
+
+<div id="toasts" aria-live="polite"></div>
 <script src="/app.js"></script>
 </body>
 </html>
