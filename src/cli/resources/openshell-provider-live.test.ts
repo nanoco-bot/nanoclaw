@@ -17,6 +17,9 @@ vi.mock('../../container-runner.js', () => ({
   killContainer: vi.fn(),
 }));
 
+const restartAgentGroupContainers = vi.hoisted(() => vi.fn(async () => 1));
+vi.mock('../../container-restart.js', () => ({ restartAgentGroupContainers }));
+
 import { INSTALL_SLUG } from '../../config.js';
 import { createAgentGroup } from '../../db/agent-groups.js';
 import { closeDb, initTestDb, runMigrations } from '../../db/index.js';
@@ -183,6 +186,34 @@ describe('detach', () => {
       `Detached OpenShell provider gh from alice for future sandboxes. Applied live to ${sb('s1')}.`,
     );
     expect(await listGroupProviders('ag-1')).toEqual([]);
+  });
+});
+
+describe('--restart', () => {
+  it('attach --restart with a running sandbox restarts the group after the live attach', async () => {
+    restartAgentGroupContainers.mockClear();
+    await session('s1', 'running');
+    const res = await run('openshell-provider-attach', { group: 'alice', 'openshell-provider': 'gh', restart: true });
+    expect(restartAgentGroupContainers).toHaveBeenCalledWith('ag-1', 'openshell provider attached');
+    expect(res.data).toMatchObject({ restarted: 1 });
+    expect(res.data.message).toMatch(/Restarted 1 container so the agent picks it up now\.$/);
+  });
+
+  it('without --restart, or with nothing running, nothing is restarted', async () => {
+    restartAgentGroupContainers.mockClear();
+    await session('s1', 'running');
+    const plain = await run('openshell-provider-attach', { group: 'alice', 'openshell-provider': 'gh' });
+    expect(plain.data).not.toHaveProperty('restarted');
+    await run('openshell-provider-detach', { group: 'alice', 'openshell-provider': 'gh' });
+    expect(restartAgentGroupContainers).not.toHaveBeenCalled();
+  });
+
+  it('detach --restart with nothing running restarts nothing and says so in data', async () => {
+    restartAgentGroupContainers.mockClear();
+    await attachGroupProvider({ agentGroupId: 'ag-1', name: 'gh', type: null, credentials: {} });
+    const res = await run('openshell-provider-detach', { group: 'alice', 'openshell-provider': 'gh', restart: true });
+    expect(restartAgentGroupContainers).not.toHaveBeenCalled();
+    expect(res.data).toMatchObject({ restarted: 0 });
   });
 });
 

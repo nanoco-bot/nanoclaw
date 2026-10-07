@@ -22,6 +22,13 @@
  *   2. live apply to every sandbox the group has running NOW:
  *      `openshell sandbox provider attach|detach <sandbox> <name> --wait`.
  * Live apply is best-effort and reported per sandbox (openshell-live.ts).
+ *
+ * Live attach reaches the sandbox's credentials, policy and the processes
+ * OpenShell starts afterwards, but not the agent's own (already running)
+ * process, which keeps its environment. `--restart` also restarts the group's
+ * running containers so the agent starts again in a sandbox created with the
+ * provider. It needs the host process (which owns the containers), i.e. `ncl`
+ * from a host shell.
  */
 import {
   attachGroupProvider,
@@ -41,7 +48,7 @@ import { registerResource, type ColumnDef } from '../crud.js';
 import type { CallerContext } from '../frame.js';
 import { logChange } from './openshell-change-log.js';
 import { resolveAgentGroup } from './openshell-group.js';
-import { applyLive, liveSummary } from './openshell-live.js';
+import { applyLive, liveSummary, type LiveResult } from './openshell-live.js';
 import { openShellCommandCli } from './openshell-policy.js';
 
 const GROUP_ARG: ColumnDef = {
@@ -56,6 +63,34 @@ const PROVIDER_ARG: ColumnDef = {
   required: true,
   description: 'OpenShell gateway provider name (not the AI model provider).',
 };
+
+const RESTART_ARG: ColumnDef = {
+  name: 'restart',
+  type: 'boolean',
+  description:
+    "Also restart the group's running containers, so the agent's own process gets the change now (work in progress " +
+    'resumes; otherwise it starts on the next message).',
+};
+
+/** With --restart and a running sandbox: restart the group's containers (host process only). */
+async function restartIfAsked(
+  restart: unknown,
+  group: { id: string },
+  live: readonly LiveResult[],
+  why: string,
+): Promise<{ restarted?: number; note: string }> {
+  if (restart !== true) return { note: '' };
+  if (live.length === 0) return { restarted: 0, note: '' };
+  // Lazy: only this path needs the container runtime.
+  const { restartAgentGroupContainers } = await import('../../container-restart.js');
+  const restarted = await restartAgentGroupContainers(group.id, why);
+  return {
+    restarted,
+    note: restarted
+      ? ` Restarted ${restarted} container${restarted > 1 ? 's' : ''} so the agent picks it up now.`
+      : ' No container to restart.',
+  };
+}
 
 /** Never let a credential value reach an error message. */
 function scrub(text: string, secrets: string[]): string {
@@ -113,9 +148,10 @@ registerResource({
           description: 'With --type: JSON object of credential env-var name → value.',
         },
         { name: 'config', type: 'json', description: 'With --type: JSON object of provider config key → value.' },
+        RESTART_ARG,
       ],
       examples: [
-        'ncl openshell-provider attach --group alice --openshell-provider github-alice',
+        'ncl openshell-provider attach --group alice --openshell-provider github-alice --restart',
         `echo '{"credentials":{"GITHUB_TOKEN":"…"}}' | ncl openshell-provider attach --group alice --openshell-provider github-alice --type github --stdin-json`,
       ],
       handler: async (args, ctx: CallerContext) => {
@@ -167,15 +203,17 @@ registerResource({
           { provider: providerInfo },
           ctx.caller,
         );
+        const restart = await restartIfAsked(args.restart, group, live, 'openshell provider attached');
         return {
           group: { id: group.id, folder: group.folder, name: group.name },
           created: Boolean(type),
           provider: { name: row.name, type: row.type, credentialKeys: row.credentialKeys, attachedAt: row.attachedAt },
           saved: true,
           live,
+          ...(restart.restarted !== undefined ? { restarted: restart.restarted } : {}),
           message:
             `${type ? `Created OpenShell provider ${name} (${type}) and attached` : `Attached OpenShell provider ${name}`} ` +
-            `to ${group.folder} for future sandboxes. ${liveSummary(live)}`,
+            `to ${group.folder} for future sandboxes. ${liveSummary(live)}${restart.note}`,
         };
       },
       formatHuman: render,
@@ -187,7 +225,7 @@ registerResource({
         'Detach an OpenShell provider from a group: from every sandbox the group gets from now on, AND live from ' +
         'every sandbox the group has running now (`openshell sandbox provider detach --wait` per running sandbox) — ' +
         'approving this can change several live sandboxes at once. The provider stays in the gateway.',
-      args: [GROUP_ARG, PROVIDER_ARG],
+      args: [GROUP_ARG, PROVIDER_ARG, RESTART_ARG],
       examples: ['ncl openshell-provider detach --group alice --openshell-provider github-alice'],
       handler: async (args, ctx: CallerContext) => {
         const group = await resolveAgentGroup(args.group);
@@ -203,11 +241,15 @@ registerResource({
           { provider: { name } },
           ctx.caller,
         );
+        const restart = await restartIfAsked(args.restart, group, live, 'openshell provider detached');
         return {
           group: { id: group.id, folder: group.folder, name: group.name },
           saved: true,
           live,
-          message: `Detached OpenShell provider ${name} from ${group.folder} for future sandboxes. ${liveSummary(live)}`,
+          ...(restart.restarted !== undefined ? { restarted: restart.restarted } : {}),
+          message:
+            `Detached OpenShell provider ${name} from ${group.folder} for future sandboxes. ${liveSummary(live)}` +
+            restart.note,
         };
       },
       formatHuman: render,
