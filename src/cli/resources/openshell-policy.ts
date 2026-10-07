@@ -181,7 +181,7 @@ registerResource({
       description:
         'List network rule proposals for a sandbox (`openshell rule get --status <status>`).\n' +
         NETWORK_ONLY +
-        '\nAlso reports whether the sandbox has agent_policy_proposals_enabled: when it is off or unset (OpenShell default: off), the gateway generates no proposals and the list is always empty.',
+        '\nAlso reports whether the sandbox has agent_policy_proposals_enabled. Off or unset (OpenShell default: off) stops only agent-authored proposals; connections OpenShell denies are still proposed here.',
       args: [
         ...TARGET_ARGS,
         {

@@ -171,6 +171,12 @@ export function proposalsState(settingsJson: string): ProposalsState {
   return 'unknown';
 }
 
+/**
+ * What the setting means for this list (OpenShell RFC 0002): it gates only
+ * AGENT-authored proposals — the in-sandbox `policy.local` skill and routes.
+ * Connections OpenShell denies still produce proposals with it off, so the
+ * list is not empty just because the setting is.
+ */
 export function proposalsNote(state: ProposalsState): string | undefined {
   switch (state) {
     case 'enabled':
@@ -178,11 +184,12 @@ export function proposalsNote(state: ProposalsState): string | undefined {
     case 'disabled':
     case 'unset':
       return (
-        `${PROPOSALS_SETTING} is ${state === 'unset' ? 'not set (default: off)' : 'off'} for this sandbox, ` +
-        'so OpenShell generates no rule proposals and this list stays empty. Turn it on at the OpenShell gateway ' +
+        `Proposals here come from connections OpenShell denied. ${PROPOSALS_SETTING} is ` +
+        `${state === 'unset' ? 'not set (default: off)' : 'off'} for this sandbox, so the agent cannot draft rules ` +
+        'itself; turn it on at the OpenShell gateway to let it ' +
         `(e.g. \`openshell settings set --global --key ${PROPOSALS_SETTING} --value true\`).`
       );
     case 'unknown':
-      return `Could not read ${PROPOSALS_SETTING} for this sandbox; an empty list may mean proposals are off at the gateway.`;
+      return `Could not read ${PROPOSALS_SETTING} for this sandbox, so whether the agent can draft rules itself is unknown.`;
   }
 }

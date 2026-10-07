@@ -114,7 +114,10 @@ describe('agent_policy_proposals_enabled detection', () => {
 
   it('explains an empty list unless proposals are on', () => {
     expect(proposalsNote('enabled')).toBeUndefined();
-    expect(proposalsNote('unset')).toMatch(/default: off.*always empty|stays empty/);
+    expect(proposalsNote('unset')).toMatch(/default: off/);
+    // Off gates agent-authored proposals only; denied connections still produce them.
+    expect(proposalsNote('unset')).toMatch(/come from connections OpenShell denied/);
+    expect(proposalsNote('unset')).not.toMatch(/empty/);
     expect(proposalsNote('disabled')).toMatch(/off/);
     expect(proposalsNote('unknown')).toMatch(/Could not read/);
   });

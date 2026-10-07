@@ -96,7 +96,7 @@ describe('openshell-policy resource', () => {
     expect(calls).toEqual([]);
   });
 
-  it('list: pending proposals plus an explicit proposals-disabled note', async () => {
+  it('list: pending proposals plus a note that the agent cannot draft rules itself', async () => {
     replies['rule get'] = "No network rules for sandbox 'ncl-abc'\n";
     replies['settings get'] = JSON.stringify({ settings: {} });
     const res = await ok('openshell-policy-list', { sandbox: 'ncl-abc' });
@@ -105,7 +105,9 @@ describe('openshell-policy resource', () => {
       ['settings', 'get', 'ncl-abc', '--json'],
     ]);
     expect(res.data).toMatchObject({ proposals: 'unset' });
-    expect(res.human).toMatch(/No network rules[\s\S]*Note: agent_policy_proposals_enabled is not set/);
+    expect(res.human).toMatch(
+      /No network rules[\s\S]*Note: Proposals here come from connections OpenShell denied\. agent_policy_proposals_enabled is not set/,
+    );
   });
 
   it('list: no note when proposals are on; settings failure reads as unknown, not on', async () => {
