@@ -18,8 +18,12 @@ import { execFile } from 'node:child_process';
 
 export interface OpenShellCli {
   readonly bin: string;
-  /** Run to completion; resolves stdout. Rejects with an `OpenShellCliError` on non-zero exit. */
-  run(args: string[], opts?: { timeoutMs?: number }): Promise<string>;
+  /**
+   * Run to completion; resolves stdout. Rejects with an `OpenShellCliError` on non-zero exit.
+   * `env` adds variables to this one child only — how credential VALUES reach
+   * `openshell provider create --credential KEY` without ever touching argv.
+   */
+  run(args: string[], opts?: { timeoutMs?: number; env?: Record<string, string> }): Promise<string>;
 }
 
 export class OpenShellCliError extends Error {
@@ -49,7 +53,7 @@ export function realOpenShellCli(bin = 'openshell', extraEnv: Record<string, str
             // Machine-read output: never colorize. Gateway selection
             // (OPENSHELL_GATEWAY / OPENSHELL_GATEWAY_ENDPOINT) is inherited,
             // or supplied from `.env` via `extraEnv` (see config.ts).
-            env: { ...process.env, ...extraEnv, OPENSHELL_COLOR: 'never', NO_COLOR: '1' },
+            env: { ...process.env, ...extraEnv, ...(opts?.env ?? {}), OPENSHELL_COLOR: 'never', NO_COLOR: '1' },
           },
           (error, stdout, stderr) => {
             if (!error) {

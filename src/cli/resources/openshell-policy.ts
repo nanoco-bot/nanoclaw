@@ -25,10 +25,7 @@
  * sandbox starts and has no proposal flow. view / add-rule read and edit the
  * full policy document directly.
  */
-import fs from 'node:fs';
-import path from 'node:path';
-
-import { DATA_DIR, INSTALL_SLUG } from '../../config.js';
+import { INSTALL_SLUG } from '../../config.js';
 import { getSession } from '../../db/sessions.js';
 import { OpenShellCliError, type OpenShellCli } from '../../drivers/openshell/cli.js';
 import { configuredOpenShellCli } from '../../drivers/openshell/config.js';
@@ -48,6 +45,7 @@ import {
 import { loadPreset, presetUpdateOptions } from '../../drivers/openshell/preset-registry.js';
 import { sandboxName } from '../../drivers/openshell/realize.js';
 import { registerResource, type ColumnDef } from '../crud.js';
+import { logChange, type PolicyChangeRecord } from './openshell-change-log.js';
 import type { CallerContext } from '../frame.js';
 
 /** Test seam: the CLI the commands run. */
@@ -55,33 +53,12 @@ let cliFactory: () => OpenShellCli = () => configuredOpenShellCli();
 export function setOpenShellPolicyCli(factory: (() => OpenShellCli) | null): void {
   cliFactory = factory ?? (() => configuredOpenShellCli());
 }
-
-/** Test seam: where policy changes are logged. */
-const defaultLogPath = () => path.join(DATA_DIR, 'openshell-policy', 'changes.jsonl');
-let logPath: () => string = defaultLogPath;
-export function setOpenShellPolicyLog(file: string | null): void {
-  logPath = file ? () => file : defaultLogPath;
+/** The CLI every `ncl openshell-*` resource runs (one seam for all of them). */
+export function openShellCommandCli(): OpenShellCli {
+  return cliFactory();
 }
 
-export interface PolicyChangeRecord {
-  ts: string;
-  verb: 'add-rule' | 'apply-preset';
-  caller: string;
-  sandbox: string;
-  /** The exact `openshell` argv sent. */
-  command: string[];
-  /** Whether OpenShell accepted it; failed attempts are logged too. */
-  ok: boolean;
-  error?: string;
-  /** apply-preset only: which preset (and which of its rules) produced this change. */
-  preset?: { name: string; version: number; rule: string };
-}
-
-function logChange(record: Omit<PolicyChangeRecord, 'ts'>): void {
-  const file = logPath();
-  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
-  fs.appendFileSync(file, JSON.stringify({ ts: new Date().toISOString(), ...record }) + '\n', { mode: 0o600 });
-}
+export { setOpenShellPolicyLog, type PolicyChangeRecord } from './openshell-change-log.js';
 
 /** Run one policy change and log it, whatever the outcome. */
 async function runLogged(

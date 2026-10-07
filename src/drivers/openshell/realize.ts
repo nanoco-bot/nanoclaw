@@ -58,14 +58,40 @@ export interface CreateArgsInput {
   name: string;
   policyPath: string;
   driverConfig: DriverConfig | null;
+  /** OpenShell gateway provider names to attach (the group's, from openshell_group_providers). */
+  providers?: readonly string[];
 }
+
+/**
+ * The `openshell sandbox create` flag that attaches a named provider, once per
+ * provider. Verified on OpenShell v0.1.2: `--help` ("Attach a configured
+ * credential provider to the sandbox … Repeatable") and openshell-cli
+ * main.rs (`#[arg(long = "provider")] providers: Vec<String>`).
+ */
+export const PROVIDER_ATTACH_FLAG = '--provider';
+
+/** OpenShell's own provider-name shape (openshell-cli), also refused if it could read as a flag. */
+export const PROVIDER_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$/;
 
 /**
  * `openshell sandbox create` argv. `--detach` returns once the sandbox is
  * provisioned without attaching to the main process; `--no-tty` and
  * `--no-auto-providers` keep it non-interactive (a prompt would hang the host).
+ *
+ * `--no-auto-providers` stays even when providers are attached: it only stops
+ * OpenShell from auto-CREATING missing providers out of this host's local
+ * credentials; it does not conflict with `--provider` (no clap
+ * conflicts_with between them in main.rs). A named provider the gateway does
+ * not have fails the create instead of being invented from the host's env.
  */
-export function createArgs({ spec, container, name, policyPath, driverConfig }: CreateArgsInput): string[] {
+export function createArgs({
+  spec,
+  container,
+  name,
+  policyPath,
+  driverConfig,
+  providers = [],
+}: CreateArgsInput): string[] {
   const args = ['sandbox', 'create', '--name', name, '--from', container.image, '--policy', policyPath];
   if (driverConfig) args.push('--driver-config-json', JSON.stringify(driverConfig));
   for (const [k, v] of Object.entries(sandboxLabels(spec, container))) args.push('--label', `${k}=${v}`);
@@ -75,6 +101,10 @@ export function createArgs({ spec, container, name, policyPath, driverConfig }: 
   for (const [k, v] of Object.entries(env)) args.push('--env', `${k}=${v}`);
   if (spec.resources.cpus) args.push('--cpu', spec.resources.cpus);
   if (spec.resources.memoryMb) args.push('--memory', memoryQuantity(spec.resources.memoryMb));
+  for (const provider of new Set(providers)) {
+    if (!PROVIDER_NAME_RE.test(provider)) throw specInvalid(`OpenShell provider name '${provider}' is not valid`);
+    args.push(PROVIDER_ATTACH_FLAG, provider);
+  }
   args.push('--detach', '--no-tty', '--no-auto-providers', '-o', 'json');
   const argv = [...(container.command ?? []), ...(container.args ?? [])];
   if (argv.length > 0) args.push('--', ...argv);
@@ -218,6 +248,15 @@ export function cliErrorSummary(raw: string): string {
 
 export function normalizeOpenShellError(error: unknown, now: () => number = Date.now): SessionFailureError {
   const msg = cliErrorSummary(error instanceof Error ? error.message : String(error));
+  const missingProvider = /provider '([^']+)' not found/i.exec(msg);
+  if (missingProvider) {
+    // An attached group provider (openshell_group_providers) the gateway does
+    // not have. Retrying cannot fix it; the operator's store must.
+    return specInvalid(
+      `OpenShell provider '${missingProvider[1]}' is attached to this agent group but does not exist in the gateway; ` +
+        `create it (\`ncl openshell-provider attach --type …\`) or detach it (\`ncl openshell-provider detach\`). OpenShell said: ${msg}`,
+    );
+  }
   if (/reserved for the OpenShell workspace/i.test(msg)) {
     // The image's OCI WorkingDir is OpenShell's workspace root, and no mount may
     // cover it. NanoClaw's agent image sets WORKDIR /workspace/group while core

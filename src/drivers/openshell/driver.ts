@@ -34,9 +34,10 @@ import {
   renderPolicyYaml,
   type CompiledPolicy,
   type DriverConfig,
+  type EgressRule,
   type PolicyOptions,
 } from './policy.js';
-import { policyOptionsFor } from './group-policy.js';
+import { mergePolicyOptions, policyOptionsFor } from './group-policy.js';
 import { assertHostMounts, type Lstat } from './host-mount.js';
 import {
   createArgs,
@@ -49,6 +50,7 @@ import {
   normalizeOpenShellError,
   parseSandboxDoc,
   parseSandboxList,
+  PROVIDER_NAME_RE,
   recordedFailure,
   sandboxLabels,
   sandboxName,
@@ -62,6 +64,7 @@ import {
   specInvalid,
   validateSpec,
   type DriverCapabilities,
+  GROUP_FOLDER_LABEL,
   type MountPolicy,
   type SessionDriver,
   type SessionEvent,
@@ -81,6 +84,15 @@ export interface Logger {
   warn(msg: string, ctx?: Record<string, unknown>): void;
 }
 
+/** Per-group-folder data: a fixed map, or a lookup evaluated at every prepare(). */
+export type GroupLookup<T> = Record<string, T> | ((folder: string) => T | Promise<T>);
+
+async function lookupGroup<T>(source: GroupLookup<T> | undefined, folder: string | undefined, empty: T): Promise<T> {
+  if (!source || !folder) return empty;
+  if (typeof source === 'function') return (await source(folder)) ?? empty;
+  return Object.prototype.hasOwnProperty.call(source, folder) ? source[folder] : empty;
+}
+
 export interface OpenShellDriverOptions extends MountPolicy {
   cli?: OpenShellCli;
   /** Default policy options for every session. */
@@ -90,6 +102,20 @@ export interface OpenShellDriverOptions extends MountPolicy {
    * `nanoclaw-group-folder` label), merged over `policy` — see group-policy.ts.
    */
   groupPolicy?: Record<string, PolicyOptions>;
+  /**
+   * OpenShell gateway provider names each agent group's sandboxes are created
+   * with (`sandbox create --provider`), keyed by group FOLDER like
+   * `groupPolicy`. A function is looked up at every prepare(), so an attach
+   * made after the host started applies to the group's next sandbox without a
+   * restart — register.ts passes the DB-backed lookup (openshell_group_providers).
+   */
+  groupProviders?: GroupLookup<readonly string[]>;
+  /**
+   * Raw egress rules per group FOLDER, independent of any provider; they
+   * ACCUMULATE on top of `policy` + `groupPolicy` egress (mergePolicyOptions).
+   * DB-backed (openshell_group_egress) via register.ts.
+   */
+  groupEgress?: GroupLookup<readonly EgressRule[]>;
   /** Watch poll interval. Default 2000ms. */
   pollIntervalMs?: number;
   /** Where the transient policy file is written for `--policy`. Default os.tmpdir(). */
@@ -133,6 +159,8 @@ interface PendingRealization {
   spec: SessionSpec;
   policy: CompiledPolicy;
   driverConfig: DriverConfig | null;
+  /** OpenShell providers to attach at create (the group's). */
+  providers: readonly string[];
 }
 
 export class OpenShellSessionDriver implements SessionDriver {
@@ -223,10 +251,24 @@ export class OpenShellSessionDriver implements SessionDriver {
 
     // Compile everything up front: a spec this driver cannot realize fails
     // prepare(), before the host arms anything.
+    // The group's durable OpenShell resources: providers to attach and raw
+    // egress rules, read fresh for every new sandbox (no restart, no manual step).
+    const folder = spec.labels[GROUP_FOLDER_LABEL];
+    const [providers, groupEgress] = await Promise.all([
+      lookupGroup(this.#opts.groupProviders, folder, [] as readonly string[]),
+      lookupGroup(this.#opts.groupEgress, folder, [] as readonly EgressRule[]),
+    ]);
+    for (const p of providers) {
+      // Refused now, not at create: a bad name in the store must not cost an allocation.
+      if (!PROVIDER_NAME_RE.test(p)) throw specInvalid(`OpenShell provider name '${p}' is not valid`);
+    }
+    let options = policyOptionsFor(spec, this.#opts.policy ?? {}, this.#opts.groupPolicy);
+    if (groupEgress.length > 0) options = mergePolicyOptions(options, { egress: groupEgress });
     const pending: PendingRealization = {
       spec,
-      policy: compilePolicy(spec, agent, policyOptionsFor(spec, this.#opts.policy ?? {}, this.#opts.groupPolicy)),
+      policy: compilePolicy(spec, agent, options),
       driverConfig: compileDriverConfig(agent),
+      providers,
     };
     // The bind list and the Landlock policy must agree on every mount's access.
     assertDriverConfigMatchesPolicy(pending.policy, pending.driverConfig);
@@ -475,13 +517,13 @@ class OpenShellHandle implements SessionHandle {
   async start(): Promise<void> {
     if (this.#started || !this.pending) return; // idempotent; an adopted session is already running
     this.#started = true;
-    const { spec, policy, driverConfig } = this.pending;
+    const { spec, policy, driverConfig, providers } = this.pending;
     const agent = spec.containers.find((c) => c.role === 'agent')!;
     const dir = await fs.mkdtemp(path.join(this.tmpDir ?? os.tmpdir(), 'nanoclaw-openshell-'));
     const policyPath = path.join(dir, 'policy.yaml');
     try {
       await fs.writeFile(policyPath, renderPolicyYaml(policy), { mode: 0o600 });
-      await this.cli.run(createArgs({ spec, container: agent, name: this.name, policyPath, driverConfig }));
+      await this.cli.run(createArgs({ spec, container: agent, name: this.name, policyPath, driverConfig, providers }));
     } catch (err) {
       this.log.warn('OpenShell sandbox create failed', {
         name: this.name,
