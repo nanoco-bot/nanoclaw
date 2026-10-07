@@ -194,6 +194,8 @@ export function installStatusFields(outcome: Extract<InstallOutcome, { ok: true 
     SUPERVISOR_IMAGE: outcome.runtime.supervisorImageRef,
     SUPERVISOR_IMAGE_STATUS: outcome.runtime.supervisorImage,
     GATEWAY_MOUNTS: outcome.runtime.mounts,
+    // Present only when setup created ~/.config/openshell/gateway.toml itself (none existed).
+    ...(outcome.runtime.gatewayConfigCreated ? { GATEWAY_CONFIG_CREATED: outcome.runtime.gatewayConfigCreated } : {}),
     WARNINGS: outcome.runtime.warnings.length,
   };
 }

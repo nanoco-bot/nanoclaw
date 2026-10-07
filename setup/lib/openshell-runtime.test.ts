@@ -1,4 +1,8 @@
-import { describe, expect, it } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
   classifyMountProbe,
@@ -8,8 +12,10 @@ import {
   inspectOpenShellRuntime,
   isLocalGateway,
   NANOCLAW_GATEWAY_SETTINGS,
+  NEW_GATEWAY_TOML,
   openShellHostSupport,
   parseGatewayStatus,
+  planGatewayConfigCreate,
   probeGatewayMounts,
   PROBE_IMAGE,
   supervisorImageRef,
@@ -249,7 +255,32 @@ describe('gatewayConfigRemedy', () => {
 });
 
 describe('ensureOpenShellRuntime (the install step’s checks)', () => {
-  const base = { bin: '/usr/bin/openshell', env: {}, platform: 'linux', hostDir: '/srv/nc', sleep: async () => {} };
+  // Every test gets its own fake home, so nothing is ever written to the real ~/.config.
+  let home: string;
+  let base: {
+    bin: string;
+    env: NodeJS.ProcessEnv;
+    platform: string;
+    hostDir: string;
+    sleep: () => Promise<void>;
+    home: string;
+    hostEnv: NodeJS.ProcessEnv;
+  };
+  const configDir = () => path.join(home, '.config', 'openshell');
+  const configFile = () => path.join(configDir(), 'gateway.toml');
+  beforeEach(() => {
+    home = fs.mkdtempSync(path.join(os.tmpdir(), 'openshell-home-'));
+    base = {
+      bin: '/usr/bin/openshell',
+      env: {},
+      platform: 'linux',
+      hostDir: '/srv/nc',
+      sleep: async () => {},
+      home,
+      hostEnv: {},
+    };
+  });
+  afterEach(() => fs.rmSync(home, { recursive: true, force: true }));
 
   function healthy(overrides: [(cmd: string, args: string[]) => boolean, RunResult | (() => RunResult)][] = []) {
     return machine([
@@ -361,12 +392,136 @@ describe('ensureOpenShellRuntime (the install step’s checks)', () => {
     ['allow_driver_config', PROBE.allow],
     ['enable_bind_mounts', PROBE.bind],
     ['resource_admission', PROBE.admission],
-  ])('a gateway without %s fails with the exact settings to add (and changes nothing)', async (_setting, result) => {
-    const m = healthy([[is('/usr/bin/openshell', 'sandbox', 'create'), result]]);
+  ])(
+    'an operator gateway.toml exists and the gateway lacks %s: the original failure, file untouched, no restart',
+    async (_setting, result) => {
+      const operatorToml = '[openshell]\nversion = 2\n\n[openshell.gateway]\n# operator-owned\n';
+      fs.mkdirSync(configDir(), { recursive: true });
+      fs.writeFileSync(configFile(), operatorToml);
+      const before = fs.statSync(configFile());
+      const m = healthy([[is('/usr/bin/openshell', 'sandbox', 'create'), result]]);
+      const r = await ensureOpenShellRuntime({ ...base, run: m.run });
+      expect(r).toEqual({
+        ok: false,
+        error: 'gateway_config',
+        message: expect.stringMatching(/^OpenShell's gateway refuses NanoClaw's sandbox mounts \(needs [^)]+\)\.$/),
+        hint: gatewayConfigRemedy('linux'),
+      });
+      expect(fs.readFileSync(configFile(), 'utf8')).toBe(operatorToml);
+      expect(fs.statSync(configFile()).mtimeMs).toBe(before.mtimeMs);
+      expect(m.calls.some((c) => c.cmd === 'systemctl')).toBe(false);
+      expect(m.calls.some((c) => c.args[1] === 'delete')).toBe(false);
+    },
+  );
+
+  it.each([
+    ['allow_driver_config', PROBE.allow],
+    ['enable_bind_mounts', PROBE.bind],
+    ['resource_admission', PROBE.admission],
+  ])(
+    'fresh Linux install, no gateway.toml, missing %s: creates it, restarts, re-probes, ok with a warning',
+    async (_setting, result) => {
+      let restarted = false;
+      let statusAfterRestart = 0;
+      const m = healthy([
+        [is('/usr/bin/openshell', 'sandbox', 'create'), () => (restarted ? PROBE.passed : result)],
+        [
+          is('systemctl', '--user', 'restart', 'openshell-gateway'),
+          () => {
+            restarted = true;
+            return ok();
+          },
+        ],
+        // The gateway takes a couple of polls to come back after the restart.
+        [
+          is('/usr/bin/openshell', 'status'),
+          () => (restarted && ++statusAfterRestart < 3 ? err(REFUSED) : ok(CONNECTED)),
+        ],
+      ]);
+      const r = await ensureOpenShellRuntime({ ...base, run: m.run });
+      expect(r).toMatchObject({ ok: true, mounts: 'ok', gatewayConfigCreated: configFile() });
+      expect(r.ok && r.warnings).toHaveLength(1);
+      expect(r.ok && r.warnings[0]).toContain(`NanoClaw created ${configFile()}`);
+      expect(r.ok && r.warnings[0]).toContain('systemctl --user restart openshell-gateway');
+      expect(fs.readFileSync(configFile(), 'utf8')).toBe(`[openshell]\nversion = 2\n\n${NANOCLAW_GATEWAY_SETTINGS}\n`);
+      expect(fs.statSync(configFile()).mode & 0o777).toBe(0o600);
+      expect(m.calls.filter((c) => c.cmd === 'systemctl')).toHaveLength(1);
+      expect(m.calls.filter((c) => c.args[0] === 'sandbox' && c.args[1] === 'create')).toHaveLength(2);
+      expect(statusAfterRestart).toBe(3);
+    },
+  );
+
+  it('fresh Linux install, created + restarted, but the re-probe still refuses: original gateway_config failure, noting the attempt', async () => {
+    const m = healthy([
+      [is('/usr/bin/openshell', 'sandbox', 'create'), PROBE.allow],
+      [is('systemctl', '--user', 'restart', 'openshell-gateway'), ok()],
+    ]);
+    const r = await ensureOpenShellRuntime({ ...base, run: m.run });
+    expect(r).toMatchObject({ ok: false, error: 'gateway_config', hint: gatewayConfigRemedy('linux') });
+    expect(!r.ok && r.message).toMatch(
+      /^OpenShell's gateway refuses NanoClaw's sandbox mounts \(needs allow_driver_config = true\)\./,
+    );
+    expect(!r.ok && r.message).toContain(
+      `NanoClaw created ${configFile()} with these settings and restarted the gateway, but it still refuses`,
+    );
+    expect(fs.readFileSync(configFile(), 'utf8')).toBe(NEW_GATEWAY_TOML);
+    expect(m.calls.filter((c) => c.cmd === 'systemctl')).toHaveLength(1);
+    expect(m.calls.filter((c) => c.args[1] === 'create')).toHaveLength(2); // retried exactly once
+  });
+
+  it('fresh Linux install, created, but the restart command fails: gateway_config, noting it', async () => {
+    const m = healthy([
+      [is('/usr/bin/openshell', 'sandbox', 'create'), PROBE.allow],
+      [is('systemctl'), err('Failed to connect to bus: No medium found')],
+    ]);
+    const r = await ensureOpenShellRuntime({ ...base, run: m.run });
+    expect(r).toMatchObject({ ok: false, error: 'gateway_config', hint: gatewayConfigRemedy('linux') });
+    expect(!r.ok && r.message).toContain(
+      '`systemctl --user restart openshell-gateway` failed (Failed to connect to bus',
+    );
+    expect(m.calls.filter((c) => c.args[1] === 'create')).toHaveLength(1);
+  });
+
+  it('fresh Linux install, created + restarted, but the gateway never comes back: gateway_config, noting it', async () => {
+    let restarted = false;
+    const m = healthy([
+      [is('/usr/bin/openshell', 'sandbox', 'create'), PROBE.allow],
+      [
+        is('systemctl'),
+        () => {
+          restarted = true;
+          return ok();
+        },
+      ],
+      [is('/usr/bin/openshell', 'status'), () => (restarted ? err(REFUSED) : ok(CONNECTED))],
+    ]);
+    const r = await ensureOpenShellRuntime({ ...base, run: m.run, waitMs: 4_000, pollMs: 2_000 });
+    expect(r).toMatchObject({ ok: false, error: 'gateway_config' });
+    expect(!r.ok && r.message).toContain("didn't answer again within 4s");
+    expect(m.calls.filter((c) => c.args[1] === 'create')).toHaveLength(1);
+  });
+
+  it('macOS keeps the original failure and hint: no file written, no restart attempted', async () => {
+    const m = healthy([[is('/usr/bin/openshell', 'sandbox', 'create'), PROBE.allow]]);
+    const r = await ensureOpenShellRuntime({ ...base, platform: 'macos', run: m.run });
+    expect(r).toEqual({
+      ok: false,
+      error: 'gateway_config',
+      message: "OpenShell's gateway refuses NanoClaw's sandbox mounts (needs allow_driver_config = true).",
+      hint: gatewayConfigRemedy('macos'),
+    });
+    expect(fs.existsSync(configDir())).toBe(false);
+    expect(m.calls.some((c) => c.cmd === 'brew' || c.cmd === 'systemctl')).toBe(false);
+  });
+
+  it('a dangling gateway.toml symlink counts as existing: not followed, not replaced', async () => {
+    fs.mkdirSync(configDir(), { recursive: true });
+    fs.symlinkSync(path.join(home, 'nowhere.toml'), configFile());
+    const m = healthy([[is('/usr/bin/openshell', 'sandbox', 'create'), PROBE.allow]]);
     const r = await ensureOpenShellRuntime({ ...base, run: m.run });
     expect(r).toMatchObject({ ok: false, error: 'gateway_config' });
-    expect(!r.ok && r.hint).toContain(NANOCLAW_GATEWAY_SETTINGS);
-    expect(m.calls.some((c) => c.args[1] === 'delete')).toBe(false);
+    expect(fs.existsSync(path.join(home, 'nowhere.toml'))).toBe(false);
+    expect(m.calls.some((c) => c.cmd === 'systemctl')).toBe(false);
   });
 
   it('an inconclusive probe is a warning, not a failure', async () => {
@@ -374,5 +529,50 @@ describe('ensureOpenShellRuntime (the install step’s checks)', () => {
     const r = await ensureOpenShellRuntime({ ...base, run: m.run });
     expect(r).toMatchObject({ ok: true, mounts: 'unknown' });
     expect(r.ok && r.warnings).toHaveLength(1);
+  });
+});
+
+describe('planGatewayConfigCreate (when setup may create the gateway config itself)', () => {
+  let home: string;
+  beforeEach(() => {
+    home = fs.mkdtempSync(path.join(os.tmpdir(), 'openshell-plan-'));
+  });
+  afterEach(() => fs.rmSync(home, { recursive: true, force: true }));
+  const plan = (over: Partial<Parameters<typeof planGatewayConfigCreate>[0]> = {}) =>
+    planGatewayConfigCreate({
+      platform: 'linux',
+      bin: '/usr/bin/openshell',
+      server: 'https://127.0.0.1:17670',
+      env: {},
+      hostEnv: {},
+      home,
+      ...over,
+    });
+
+  it('a local Linux gateway with nothing at ~/.config/openshell/gateway.toml: create there', () => {
+    expect(plan()).toEqual({ create: true, path: path.join(home, '.config', 'openshell', 'gateway.toml') });
+    expect(plan({ hostEnv: { XDG_CONFIG_HOME: path.join(home, '.config') } }).create).toBe(true);
+  });
+
+  it('never on macOS (Homebrew always seeds its own gateway.toml, which ~/.config would shadow)', () => {
+    expect(plan({ platform: 'macos' })).toEqual({ create: false, reason: expect.stringMatching(/Linux-only/) });
+  });
+
+  it('never when the config lives somewhere else or the gateway is not this machine’s', () => {
+    expect(plan({ hostEnv: { OPENSHELL_GATEWAY_CONFIG: '/etc/openshell/gw.toml' } }).create).toBe(false);
+    expect(plan({ env: { OPENSHELL_GATEWAY_CONFIG: '/etc/openshell/gw.toml' } }).create).toBe(false);
+    expect(plan({ hostEnv: { XDG_CONFIG_HOME: '/elsewhere' } }).create).toBe(false);
+    expect(plan({ bin: '/snap/bin/openshell' }).create).toBe(false);
+    expect(plan({ server: 'https://gw.example.com' }).create).toBe(false);
+  });
+
+  it('never when a gateway.toml or a gateway.env already exists', () => {
+    const dir = path.join(home, '.config', 'openshell');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'gateway.env'), '');
+    expect(plan().create).toBe(false);
+    fs.rmSync(path.join(dir, 'gateway.env'));
+    fs.writeFileSync(path.join(dir, 'gateway.toml'), '');
+    expect(plan()).toEqual({ create: false, reason: expect.stringMatching(/already exists/) });
   });
 });

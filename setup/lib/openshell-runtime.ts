@@ -29,6 +29,9 @@
  */
 import { spawnSync } from 'child_process';
 import { randomBytes } from 'crypto';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
 
 export interface RunResult {
   code: number;
@@ -305,6 +308,78 @@ export function gatewayConfigRemedy(platform: string): string {
   ].join('\n');
 }
 
+// ---------- first-install gateway config (Linux only) ----------
+
+/** Body of a gateway.toml NanoClaw creates when none exists. */
+export const NEW_GATEWAY_TOML = `[openshell]\nversion = 2\n\n${NANOCLAW_GATEWAY_SETTINGS}\n`;
+
+export type GatewayConfigPlan = { create: true; path: string } | { create: false; reason: string };
+
+/**
+ * May NanoClaw create the gateway config itself? Only when it would be the
+ * very first config the gateway sees, so nothing an operator chose is lost:
+ *
+ *  - Linux only. The Linux packages' systemd user service reads
+ *    ~/.config/openshell/gateway.toml (NVIDIA's installation docs). On macOS
+ *    the Homebrew formula's post_install always writes its own
+ *    $(brew --prefix)/var/openshell/gateway.toml, and its service script uses
+ *    that file only while ~/.config/openshell/gateway.toml is absent — so
+ *    creating the ~/.config file there would silently replace an existing
+ *    config. macOS keeps the hand-edit instructions.
+ *  - No gateway.toml at that path, of any kind (a dangling symlink counts as
+ *    existing). An existing file is never opened, read, appended to or replaced.
+ *  - The config location is the default one: no OPENSHELL_GATEWAY_CONFIG, no
+ *    non-default XDG_CONFIG_HOME, no gateway.env beside it (which the
+ *    packages load and which may redirect the config), not a snap install
+ *    (which reads /var/snap/openshell/common/gateway.toml).
+ *  - The gateway runs on this machine.
+ */
+export function planGatewayConfigCreate(opts: {
+  platform: string;
+  bin: string;
+  server: string;
+  env: NodeJS.ProcessEnv;
+  hostEnv: NodeJS.ProcessEnv;
+  home: string;
+}): GatewayConfigPlan {
+  if (opts.platform !== 'linux') {
+    return { create: false, reason: 'automatic gateway configuration is Linux-only' };
+  }
+  if (!isLocalGateway(opts.server)) return { create: false, reason: 'the gateway runs on another machine' };
+  if (opts.bin.includes('/snap/')) return { create: false, reason: 'snap installs keep their config elsewhere' };
+  if (opts.env.OPENSHELL_GATEWAY_CONFIG?.trim() || opts.hostEnv.OPENSHELL_GATEWAY_CONFIG?.trim()) {
+    return { create: false, reason: 'OPENSHELL_GATEWAY_CONFIG points the gateway at its own config' };
+  }
+  const defaultConfigHome = path.join(opts.home, '.config');
+  const xdg = opts.hostEnv.XDG_CONFIG_HOME?.trim();
+  if (xdg && path.resolve(xdg) !== path.resolve(defaultConfigHome)) {
+    return { create: false, reason: 'XDG_CONFIG_HOME is not the default' };
+  }
+  const dir = path.join(defaultConfigHome, 'openshell');
+  const file = path.join(dir, 'gateway.toml');
+  if (pathExists(file)) return { create: false, reason: `${file} already exists` };
+  if (pathExists(path.join(dir, 'gateway.env'))) {
+    return { create: false, reason: `${path.join(dir, 'gateway.env')} exists and may redirect the config` };
+  }
+  return { create: true, path: file };
+}
+
+/** lstat only: never opens the file, and a dangling symlink still counts. */
+function pathExists(p: string): boolean {
+  try {
+    fs.lstatSync(p);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Create the file exclusively ('wx'): if anything appeared at the path meanwhile, this throws instead of overwriting. */
+function createGatewayToml(file: string): void {
+  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+  fs.writeFileSync(file, NEW_GATEWAY_TOML, { flag: 'wx', mode: 0o600 });
+}
+
 /** How to bring a registered-but-silent local gateway back. */
 export function gatewayStartHint(platform: string): string {
   return platform === 'macos'
@@ -340,6 +415,8 @@ export type EnsureResult =
       supervisorImage: 'present' | 'pulled' | 'remote';
       mounts: 'ok' | 'unknown';
       warnings: string[];
+      /** Set only when NanoClaw created the gateway config itself (none existed): its path. */
+      gatewayConfigCreated?: string;
     }
   | { ok: false; error: EnsureFailure; message: string; hint: string };
 
@@ -356,12 +433,18 @@ export interface EnsureOptions {
   waitMs?: number;
   pollMs?: number;
   log?: (line: string) => void;
+  /** Home directory for the gateway config path (default os.homedir()). */
+  home?: string;
+  /** Setup's own environment, for OPENSHELL_GATEWAY_CONFIG / XDG_CONFIG_HOME (default process.env). */
+  hostEnv?: NodeJS.ProcessEnv;
 }
 
 /**
  * After the install script: the gateway answers, its supervisor image is in
  * Docker (pulled if not), and it accepts NanoClaw's mounts. Changes nothing
- * but the image pull; the gateway's own config is the operator's.
+ * but the image pull and, on a Linux gateway with no gateway.toml at all, the
+ * creation of that file (see planGatewayConfigCreate) plus a gateway restart.
+ * An existing gateway config is the operator's and is never touched.
  */
 export async function ensureOpenShellRuntime(opts: EnsureOptions): Promise<EnsureResult> {
   const run = opts.run ?? realRun;
@@ -447,14 +530,69 @@ export async function ensureOpenShellRuntime(opts: EnsureOptions): Promise<Ensur
   }
 
   say('Checking that the gateway accepts sandboxes with host mounts…');
-  const probe = probeGatewayMounts({ bin: opts.bin, env: opts.env, hostDir: opts.hostDir, run });
+  let probe = probeGatewayMounts({ bin: opts.bin, env: opts.env, hostDir: opts.hostDir, run });
+  let gatewayConfigCreated: string | undefined;
+  let attemptNote = '';
+  if (probe.result === 'missing') {
+    const plan = planGatewayConfigCreate({
+      platform: opts.platform,
+      bin: opts.bin,
+      server: status.server,
+      env: opts.env,
+      hostEnv: opts.hostEnv ?? process.env,
+      home: opts.home ?? os.homedir(),
+    });
+    if (plan.create) {
+      const restart = gatewayRestartCommand(opts.platform);
+      say(`No gateway config exists yet; creating ${plan.path} with the settings NanoClaw's mounts need…`);
+      let created = false;
+      try {
+        createGatewayToml(plan.path);
+        created = true;
+      } catch (e) {
+        attemptNote = ` NanoClaw tried to create ${plan.path} but couldn't (${(e as Error).message}).`;
+      }
+      if (created) {
+        gatewayConfigCreated = plan.path;
+        say(`Restarting the gateway (\`${restart}\`)…`);
+        const [cmd, ...args] = restart.split(' ');
+        const r = run(cmd, args, { timeoutMs: 60_000 });
+        if (r.code !== 0) {
+          attemptNote = ` NanoClaw created ${plan.path} with these settings, but \`${restart}\` failed (${lastLine(r.stderr || r.stdout) || `exit ${r.code}`}).`;
+        } else {
+          let after = readGatewayStatus(opts.bin, opts.env, run);
+          for (let waited = 0; after.state !== 'connected' && waited < waitMs; waited += pollMs) {
+            await sleep(pollMs);
+            after = readGatewayStatus(opts.bin, opts.env, run);
+          }
+          if (after.state !== 'connected') {
+            attemptNote = ` NanoClaw created ${plan.path} with these settings and restarted the gateway, but it didn't answer again within ${Math.round(waitMs / 1000)}s.`;
+          } else {
+            say('Gateway is back; checking the mounts again…');
+            probe = probeGatewayMounts({ bin: opts.bin, env: opts.env, hostDir: opts.hostDir, run });
+            if (probe.result === 'missing') {
+              attemptNote = ` NanoClaw created ${plan.path} with these settings and restarted the gateway, but it still refuses (${probe.setting}).`;
+            }
+          }
+        }
+      }
+    }
+  }
   if (probe.result === 'missing') {
     return {
       ok: false,
       error: 'gateway_config',
-      message: `OpenShell's gateway refuses NanoClaw's sandbox mounts (needs ${probe.setting === 'resource_admission' ? 'resource admission off' : `${probe.setting} = true`}).`,
+      message: `OpenShell's gateway refuses NanoClaw's sandbox mounts (needs ${probe.setting === 'resource_admission' ? 'resource admission off' : `${probe.setting} = true`}).${attemptNote}`,
       hint: gatewayConfigRemedy(opts.platform),
     };
+  }
+  if (gatewayConfigCreated) {
+    warnings.push(
+      `NanoClaw created ${gatewayConfigCreated} (no gateway config existed) with the settings its sandbox mounts need ` +
+        '(allow_driver_config, enable_bind_mounts, resource admission off) and restarted the gateway ' +
+        `(\`${gatewayRestartCommand(opts.platform)}\`). OpenShell documents host bind mounts as an operator override ` +
+        'that weakens its isolation; review or remove that file if this machine should not allow them.',
+    );
   }
   if (probe.result === 'unknown') {
     warnings.push(`Couldn't confirm the gateway accepts NanoClaw's sandbox mounts: ${probe.detail}`);
@@ -467,5 +605,6 @@ export async function ensureOpenShellRuntime(opts: EnsureOptions): Promise<Ensur
     supervisorImage,
     mounts: probe.result === 'ok' ? 'ok' : 'unknown',
     warnings,
+    ...(gatewayConfigCreated ? { gatewayConfigCreated } : {}),
   };
 }

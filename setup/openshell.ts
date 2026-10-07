@@ -276,6 +276,7 @@ export async function run(args: string[]): Promise<void> {
       process.exit(1);
     }
     installFields = installStatusFields(installed);
+    for (const warning of installed.runtime.warnings) log.warn(warning);
     // The CLI that was just installed or found, unless the operator named one.
     if (!answers.bin?.trim()) answers = { ...answers, bin: installed.bin };
   }

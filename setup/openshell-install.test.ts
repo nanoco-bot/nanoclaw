@@ -14,7 +14,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('../src/log.js', () => ({ log: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() } }));
 
 import type { EnsureOptions, EnsureResult } from './lib/openshell-runtime.js';
-import { installOpenShell, oneLine, type ScriptResult } from './openshell-install.js';
+import { installOpenShell, installStatusFields, oneLine, type ScriptResult } from './openshell-install.js';
 
 const LINUX = { platform: 'linux', arch: 'x64' };
 const HEALTHY: EnsureResult = {
@@ -145,5 +145,32 @@ describe('installOpenShell', () => {
 describe('oneLine', () => {
   it('folds a multi-line hint for a status block field', () => {
     expect(oneLine('a\n\n  b\nc ')).toBe('a b c');
+  });
+});
+
+describe('installStatusFields', () => {
+  const outcome = {
+    ok: true as const,
+    cli: 'installed' as const,
+    version: 'openshell 0.1.2',
+    bin: '/usr/bin/openshell',
+    binWritten: true,
+    runtime: HEALTHY as Extract<EnsureResult, { ok: true }>,
+  };
+  it('no GATEWAY_CONFIG_CREATED unless setup created the gateway config', () => {
+    expect(installStatusFields(outcome)).not.toHaveProperty('GATEWAY_CONFIG_CREATED');
+    expect(installStatusFields(outcome).WARNINGS).toBe(0);
+  });
+  it('reports the created file and counts its warning', () => {
+    const fields = installStatusFields({
+      ...outcome,
+      runtime: {
+        ...outcome.runtime,
+        gatewayConfigCreated: '/home/u/.config/openshell/gateway.toml',
+        warnings: ['NanoClaw created /home/u/.config/openshell/gateway.toml …'],
+      },
+    });
+    expect(fields.GATEWAY_CONFIG_CREATED).toBe('/home/u/.config/openshell/gateway.toml');
+    expect(fields.WARNINGS).toBe(1);
   });
 });
