@@ -63,17 +63,31 @@ Inside a sandbox, `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY` holds an `ope
 
 OpenShell refuses to forward a model request whose body contains a placeholder (`403 … body credential rewriting is disabled`), so an agent that prints a credential variable cannot reach the model again in that conversation; `/clear` starts a fresh one. The agent guidance tells agents never to print credential variables.
 
-## Policy operations
+## Per-group providers and network rules
 
-OpenShell allow and deny decisions happen in OpenShell, not in NanoClaw approval cards. The operator reviews them on the host with `ncl openshell-policy-list`, `-view`, `-approve`, `-reject` and `-add-rule`. Live proposals cover network rules only. Filesystem and process policy is fixed when a sandbox starts.
+Each agent group's OpenShell providers and network rules live in the OpenShell policy file: `NANOCLAW_OPENSHELL_POLICY_FILE`, or `data/openshell/policy.yaml` when that is not set. YAML or JSON, keyed by the group's folder:
 
-## Per-group providers and network paths
+```yaml
+default:
+  providers: [shared-search]        # attached to every group's sandboxes
+groups:
+  dm-with-asaf:
+    providers: [granola-jensen]     # OpenShell providers (create them with `openshell provider create`)
+    egress:                         # hosts reachable without a provider
+      - { name: apple, host: www.apple.com, ports: [443], binaries: [/usr/bin/curl] }
+```
 
-`ncl openshell-provider attach --group <group> --openshell-provider <name> [--type <t> --credentials '{…}']` attaches an OpenShell gateway provider to an agent group. Every sandbox the group gets from then on is created with `--provider <name>`. The flag is `--openshell-provider` because `--provider` on `ncl groups config` is the AI model provider, a different thing. With `--type`, the provider is first created in the OpenShell gateway, and the credential values go only there; pass them with `--stdin-json`. NanoClaw's DB keeps the key names and a hash, never a value. `ncl openshell-network add --group <group> --name <rule> --host <host> --ports <p> --binary <path>` adds a raw network path for the group, independent of any provider. Both are stored in the central DB and read at every sandbox creation. A network path added or removed, or a provider attached or detached, this way is also applied live to every sandbox the group has running (`openshell policy update` for a path, `openshell sandbox provider attach|detach --wait` for a provider), and each sandbox is reported as applied or failed. A failed live apply never undoes the saved change. A live provider attach reaches the sandbox's credentials, policy and processes OpenShell starts afterwards, but not the agent's own running process, which keeps the environment it started with; add `--restart` (run from a host shell) to also restart the group's running containers so the agent uses the key at once. The setup UI's attach does this by default, asking the host over `data/ncl.sock`. OpenShell v0.1.2 ships no provider profiles in the gateway, so a type's profile has to exist first: create it in the setup UI (Providers → Service types), or import it with `openshell provider profile import -f <profile.yaml>`. Inside a sandbox the credential variable holds an `openshell:resolve:env:…` placeholder; OpenShell substitutes the real value on the way out. `ncl openshell-provider-profile` keeps install-wide form hints only; the setup UI no longer uses them.
+`providers` and `egress` add up: the defaults, then the group's own. The driver reads the file for every new sandbox, so an edit reaches the group's next sandbox without a restart. A provider the file names but OpenShell does not have fails sandbox creation with a message naming it.
 
-## Setup UI
+To change a running sandbox as well, use the `openshell` CLI. Every sandbox carries its agent group's id as a label, so `openshell sandbox list --selector nanoclaw-group=<group id>` finds them; then `openshell policy update <sandbox> --add-endpoint host:port --binary <path> --rule-name <name>` (or `--remove-rule <name>`) changes its network rules, and `openshell sandbox provider attach|detach <sandbox> <provider> --wait` its providers. A provider attached to a running sandbox reaches the processes OpenShell starts afterwards, not the agent's own running process; the agent picks the key up once its sandbox restarts (`ncl groups restart --id <group id>`).
 
-`scripts/ui/` is a small operator web page for this install. A status bar shows the OpenShell gateway, the relay's Claude credential (install-wide, replaceable from there) and the group's running sandboxes. Per agent group it attaches OpenShell providers, creates and deletes service types (OpenShell provider profiles, from a short form or pasted YAML), manages network access, lets the operator allow a blocked request for the running sandbox or always (saved as a group network path) or deny it, and shows the group's activity. It only runs existing commands: `scripts/auth.ts`, the `openshell` binary, and the `ncl openshell-policy`, `openshell-provider` and `openshell-network` resources. Install it as a service with `pnpm exec tsx setup/index.ts --step openshell-ui -- --enable`, which prints the URL. It runs as a launchd agent on macOS and a systemd unit on Linux. The setup wizard starts it without asking at the end of every run where OpenShell sandboxing is enabled, and prints its URL. `NANOCLAW_SKIP=openshell-ui` leaves it out. The page has no login of its own. Expose it only through a password-gated reverse proxy and keep its port firewalled. See `scripts/ui/README.md`.
+## Blocked requests
+
+OpenShell allows and denies network requests itself, not through NanoClaw's approval cards. When an agent tries a host it may not reach, OpenShell records the request: `openshell rule get <sandbox> --status pending` lists them, `openshell rule approve <sandbox> --chunk-id <id>` allows one for that sandbox, and `openshell rule reject <sandbox> --chunk-id <id> --reason …` denies it. An approval lasts until the sandbox is recreated; to keep it, add the rule to the group in the policy file. Proposals cover network rules only. Filesystem and process policy is fixed when a sandbox starts.
+
+## Setup console
+
+`scripts/ui/` is a small operator web page for this install. A status bar shows the OpenShell gateway, the Claude credential (install-wide, replaceable from there) and the group's running sandboxes. Per agent group it attaches OpenShell providers, creates and deletes service types (OpenShell provider profiles, from a short form or pasted YAML), manages network rules, allows a blocked request for the running sandbox or always (saved in the policy file), or denies it, and shows the group's activity. It edits the policy file and runs the `openshell` CLI; nothing else. Install it as a service with `pnpm exec tsx setup/index.ts --step openshell-ui -- --enable`, which prints the URL. It runs as a launchd agent on macOS and a systemd unit on Linux. The page has no login of its own. Expose it only through a password-gated reverse proxy and keep its port firewalled. See `scripts/ui/README.md`.
 
 ## Validate
 

@@ -335,15 +335,25 @@ loaders.providers = async () => {
               { class: 'title' },
               p.name,
               p.type ? el('span', { class: 'badge' }, type ? type.label : p.type) : null,
+              p.missing
+                ? el(
+                    'span',
+                    {
+                      class: 'badge bad',
+                      title:
+                        'The policy file attaches it but OpenShell has no such provider; new sandboxes will fail until it exists',
+                    },
+                    'missing in OpenShell',
+                  )
+                : null,
             ),
             el(
               'div',
               { class: 'meta' },
               (p.credentialKeys || []).length
-                ? ['key ', ...p.credentialKeys.map((k) => el('span', { class: 'tag' }, k)), ' · ']
+                ? ['key ', ...p.credentialKeys.map((k) => el('span', { class: 'tag' }, k))]
                 : '',
-              type && type.endpoints.length ? `reaches ${type.endpoints.map((e) => e.host).join(', ')} · ` : '',
-              `attached ${relTime(p.attachedAt)}`,
+              type && type.endpoints.length ? ` · reaches ${type.endpoints.map((e) => e.host).join(', ')}` : '',
             ),
           ),
           confirmButton('Detach', `Detach ${p.name}?`, async () => {
@@ -813,8 +823,7 @@ const ACTIONS = {
   'provider-detach': 'Provider detached',
   'network-add': 'Host allowed',
   'network-remove': 'Host removed',
-  'add-rule': 'Rule added',
-  'apply-preset': 'Preset applied',
+  restart: 'Agent restarted',
   approve: 'Request allowed',
   reject: 'Request denied',
 };
@@ -859,10 +868,10 @@ loaders.audit = async () => {
     el(
       'p',
       { class: 'muted small' },
-      'Logs: ',
-      el('code', {}, data.logs.changes),
-      ' · ',
-      el('code', {}, data.logs.decisions),
+      'Saved in ',
+      el('code', {}, data.logs.policy),
+      ' · activity log ',
+      el('code', {}, data.logs.activity),
     ),
   );
 };

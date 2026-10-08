@@ -73,6 +73,12 @@ export interface PolicyOptions {
    * Emitted only for `network: 'shared-private'`; `network: 'none'` gets no rules.
    */
   egress?: readonly EgressRule[];
+  /**
+   * OpenShell providers (credentials held by OpenShell) attached to the
+   * sandbox at create. Not part of the compiled policy: OpenShell composes
+   * each provider's own L7 rule when it is attached.
+   */
+  providers?: readonly string[];
 }
 
 export interface EgressRule {

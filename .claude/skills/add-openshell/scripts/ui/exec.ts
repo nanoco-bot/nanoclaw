@@ -1,17 +1,14 @@
 /**
- * The real side effects behind the UI (routes.ts takes them as `UiDeps`).
+ * The real side effects behind the console (routes.ts takes them as `UiDeps`).
  *
  *  - `openshell`: the binary and gateway selection this install is configured
  *    with (src/drivers/openshell/config.ts — the same settings the session
- *    driver and `ncl openshell-policy` use), run with the same environment
- *    realOpenShellCli() sets (OPENSHELL_COLOR=never, NO_COLOR=1). Unlike
- *    realOpenShellCli this keeps stderr on success too: the UI shows both.
- *  - `ncl openshell-policy-*`: dispatched IN-PROCESS through the CLI's own
- *    dispatcher as the host caller — exactly what the repo's CLI tests do. No
- *    `ncl`/pnpm subprocess (and so no stray-`--` argv problem), and no need
- *    for the host to be running: with --sandbox these commands touch no DB.
+ *    driver uses), with colour off; stdout and stderr are both kept.
+ *  - the central DB, opened once as a `tool` client, for agent groups and
+ *    their sessions (read-only);
  *  - credential: the skill's `scripts/auth.ts claude`, as a child `node`
- *    process with tsx's loader (no pnpm on the service PATH required).
+ *    process with tsx's loader (no pnpm on the service PATH required);
+ *  - restart: `groups-restart` on the HOST over its ncl socket.
  */
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
@@ -20,18 +17,24 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { openShellGatewayEnv, openShellSettingsEnv } from '../../../../../src/drivers/openshell/config.js';
 import { sandboxName } from '../../../../../src/drivers/openshell/realize.js';
+import { policyFilePath } from '../../../../../src/drivers/openshell/policy-file.js';
 import { settingsFromEnv } from '../../../../../src/drivers/openshell/settings.js';
 import { getInstallSlug } from '../../../../../src/install-slug.js';
 import { readEnvFile } from '../../../../../src/env.js';
 import { SocketTransport } from '../../../../../src/cli/socket-client.js';
-import { credentialScriptArgs, type PolicyFrame } from './commands.js';
-import type { DispatchResult, ExecResult, UiDeps } from './routes.js';
+import type { ExecResult } from './openshell-ops.js';
+import type { UiDeps } from './routes.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 export const SKILL_DIR = path.resolve(HERE, '..', '..');
 export const PROJECT_ROOT = path.resolve(SKILL_DIR, '..', '..', '..');
 export const AUTH_SCRIPT = path.join(SKILL_DIR, 'scripts', 'auth.ts');
 export const STATIC_DIR = path.join(HERE, 'public');
+
+/** `node --import <tsx loader> <skill>/scripts/auth.ts claude` — no pnpm on the service PATH needed. */
+export function credentialScriptArgs(loaderUrl: string, authScriptPath: string): string[] {
+  return ['--import', loaderUrl, authScriptPath, 'claude'];
+}
 
 /** Stable across tsx upgrades (node_modules/tsx is a symlink into the pnpm store). */
 export function tsxLoaderUrl(projectRoot: string = PROJECT_ROOT): string {
@@ -73,24 +76,8 @@ export function openShellChildEnv(
   return { ...base, ...openShellGatewayEnv(settingsEnv), ...extra, OPENSHELL_COLOR: 'never', NO_COLOR: '1' };
 }
 
-let policyDispatch: ((frame: PolicyFrame) => Promise<DispatchResult>) | undefined;
-
-async function loadPolicyDispatch(): Promise<(frame: PolicyFrame) => Promise<DispatchResult>> {
-  if (!policyDispatch) {
-    // Registers only the openshell-policy-* commands; dispatch() applies the
-    // same guard / arg validation `ncl` gets over the socket.
-    await import('../../../../../src/cli/resources/openshell-policy.js');
-    const { dispatch } = await import('../../../../../src/cli/dispatch.js');
-    policyDispatch = async (frame) => {
-      const res = await dispatch({ id: randomUUID(), command: frame.command, args: frame.args }, { caller: 'host' });
-      return res.ok ? { ok: true, data: res.data } : { ok: false, error: res.error };
-    };
-  }
-  return policyDispatch;
-}
-
 let dbReady: Promise<void> | undefined;
-/** Open the central DB once for this process (see loadNclDispatch). */
+/** Open the central DB once for this process, read-only use (agent groups and sessions). */
 function ensureDb(projectRoot: string): Promise<void> {
   dbReady ??= (async () => {
     const { initDb } = await import('../../../../../src/db/connection.js');
@@ -100,30 +87,6 @@ function ensureDb(projectRoot: string): Promise<void> {
     throw err;
   });
   return dbReady;
-}
-
-let nclDispatch: ((frame: PolicyFrame) => Promise<DispatchResult>) | undefined;
-
-/**
- * Commands that read or write the central DB (custom provider profiles,
- * per-group providers / network paths). Opens `data/v2.db` once as a `tool`
- * client — the same SQLite file the host has open (WAL; better-sqlite3 waits
- * out a busy lock). The host owns migrations: before it has run the ones these
- * tables need, the commands fail and the UI shows why.
- */
-async function loadNclDispatch(projectRoot: string): Promise<(frame: PolicyFrame) => Promise<DispatchResult>> {
-  if (!nclDispatch) {
-    await ensureDb(projectRoot);
-    await import('../../../../../src/cli/resources/openshell-provider-profile.js');
-    await import('../../../../../src/cli/resources/openshell-provider.js');
-    await import('../../../../../src/cli/resources/openshell-network.js');
-    const { dispatch } = await import('../../../../../src/cli/dispatch.js');
-    nclDispatch = async (frame) => {
-      const res = await dispatch({ id: randomUUID(), command: frame.command, args: frame.args }, { caller: 'host' });
-      return res.ok ? { ok: true, data: res.data } : { ok: false, error: res.error };
-    };
-  }
-  return nclDispatch;
 }
 
 export function realDeps(projectRoot: string = PROJECT_ROOT, run: ExecFileLike = execFile): UiDeps {
@@ -137,16 +100,6 @@ export function realDeps(projectRoot: string = PROJECT_ROOT, run: ExecFileLike =
         return { code: null, stdout: '', stderr: `OpenShell settings are invalid: ${(err as Error).message}\n` };
       }
       return execCapture(run, bin, args, { env: openShellChildEnv(env, process.env, settingsEnv), cwd: projectRoot });
-    },
-    async dispatchPolicy(frame) {
-      return (await loadPolicyDispatch())(frame);
-    },
-    async dispatchNcl(frame) {
-      try {
-        return (await loadNclDispatch(projectRoot))(frame);
-      } catch (err) {
-        return { ok: false, error: { code: 'unavailable', message: (err as Error).message } };
-      }
     },
     async restartGroup(agentGroupId) {
       // The host owns the containers; this process does not. Ask it over the
@@ -197,8 +150,8 @@ export function realDeps(projectRoot: string = PROJECT_ROOT, run: ExecFileLike =
     sandboxName(agentGroupId, sessionId) {
       return sandboxName({ installSlug: getInstallSlug(projectRoot), agentGroupId, sessionId });
     },
-    changeLog: path.join(projectRoot, 'data', 'openshell-policy', 'changes.jsonl'),
-    decisionLog: path.join(projectRoot, 'data', 'openshell-setup-ui', 'decisions.jsonl'),
+    policyFile: policyFilePath(openShellSettingsEnv()),
+    activityLog: path.join(projectRoot, 'data', 'openshell-console', 'activity.jsonl'),
     staticDir: STATIC_DIR,
   };
 }

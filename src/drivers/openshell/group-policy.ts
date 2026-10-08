@@ -9,11 +9,14 @@
  * API and group `bob` does not. The driver still decides nothing — it looks up
  * what the operator declared for the folder on the spec.
  *
- * File shape (NANOCLAW_OPENSHELL_POLICY_FILE, JSON):
- *   { "default": PolicyOptions, "groups": { "<folder>": PolicyOptions } }
+ * File shape (NANOCLAW_OPENSHELL_POLICY_FILE, YAML or JSON):
+ *   default: PolicyOptions
+ *   groups:
+ *     <folder>: PolicyOptions
  */
 import { GROUP_FOLDER_LABEL, type SessionSpec } from '../types.js';
 import type { EgressRule, PolicyOptions } from './policy.js';
+import { PROVIDER_NAME_RE } from './realize.js';
 
 export interface PolicyConfig {
   default?: PolicyOptions;
@@ -21,15 +24,18 @@ export interface PolicyConfig {
 }
 
 /**
- * `over` wins field by field; `egress` rules ACCUMULATE (default rules, then
- * the group's) — a group adds destinations on top of what every agent gets
- * (e.g. the model gateway), it does not have to restate them.
+ * `over` wins field by field; `egress` rules and `providers` ACCUMULATE
+ * (default's, then the group's) — a group adds access on top of what every
+ * agent gets, it does not have to restate it.
  */
 export function mergePolicyOptions(base: PolicyOptions, over: PolicyOptions): PolicyOptions {
   const merged: PolicyOptions = { ...base, ...over };
   const egress = [...(base.egress ?? []), ...(over.egress ?? [])];
   if (egress.length > 0) merged.egress = egress;
   else delete merged.egress;
+  const providers = [...new Set([...(base.providers ?? []), ...(over.providers ?? [])])];
+  if (providers.length > 0) merged.providers = providers;
+  else delete merged.providers;
   return merged;
 }
 
@@ -53,6 +59,7 @@ const OPTION_KEYS = new Set([
   'landlockCompatibility',
   'gatewayEgress',
   'egress',
+  'providers',
 ]);
 
 function fail(where: string, what: string): never {
@@ -66,11 +73,7 @@ function stringArray(v: unknown, where: string, onFail: Fail = fail): string[] {
   return v as string[];
 }
 
-/**
- * One EgressRule, strictly: unknown keys and wrong types fail. Exported for the
- * egress presets (preset-registry.ts), which use this exact rule shape and pass
- * their own `onFail` so errors name the preset file, not this config.
- */
+/** One EgressRule, strictly: unknown keys and wrong types fail. */
 export function parseRule(v: unknown, where: string, onFail: Fail = fail): EgressRule {
   const fail: Fail = onFail;
   if (!v || typeof v !== 'object' || Array.isArray(v)) fail(where, 'must be an object');
@@ -121,10 +124,16 @@ export function parsePolicyOptions(v: unknown, where: string): PolicyOptions {
     if (!Array.isArray(o.egress)) fail(`${where}.egress`, 'must be an array');
     out.egress = o.egress.map((r, i) => parseRule(r, `${where}.egress[${i}]`));
   }
+  if (o.providers !== undefined) {
+    out.providers = stringArray(o.providers, `${where}.providers`);
+    for (const name of out.providers)
+      if (!PROVIDER_NAME_RE.test(name)) fail(`${where}.providers`, `'${name}' is not an OpenShell provider name`);
+  }
   return out;
 }
 
 export function parsePolicyConfig(json: unknown): PolicyConfig {
+  if (json === null || json === undefined) return {}; // an empty file
   if (!json || typeof json !== 'object' || Array.isArray(json)) fail('root', 'must be an object');
   const o = json as Record<string, unknown>;
   for (const k of Object.keys(o))

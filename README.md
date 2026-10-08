@@ -118,16 +118,18 @@ It runs on Linux (amd64/arm64, Debian- or RPM-based) and Apple silicon Macs; NVI
 - **Approvals.** When an agent tries a host it isn't allowed to reach, OpenShell blocks the request and lists it for you. Allow it for the running sandbox, allow it always (saved for the group), or deny it.
 - **Activity.** Every change and decision, allowed and denied alike.
 
-Providers and network rules are saved for the group, so every new sandbox gets them, and they are also applied to the group's running sandboxes immediately. A newly attached key reaches the agent after its sandbox restarts; the console restarts it for you, and `ncl` does with `--restart`.
+Providers and network rules are saved per group in the OpenShell policy file (`data/openshell/policy.yaml` by default), so every new sandbox gets them; the console also applies them to the group's running sandboxes immediately. A newly attached key reaches the agent after its sandbox restarts, which the console does for you.
 
 **The console.** A small web page for all of the above, plus OpenShell's status and the Claude credential. It also creates *service types*, OpenShell's definition of a service (its hosts, how the key is sent, which programs may connect), since OpenShell ships none. It listens on port 8790 by default (`NANOCLAW_OPENSHELL_UI_PORT`). **It has no login of its own:** reach it only through a password-protected reverse proxy and keep the port firewalled.
 
 **From the command line:**
 
 ```bash
-ncl openshell-provider attach --group <group> --openshell-provider <name> [--type <type> --stdin-json] [--restart]
-ncl openshell-network add --group <group> --name <rule> --host <host> --ports 443 --binary /usr/bin/curl
-ncl openshell-policy-list --sandbox <sandbox>     # blocked requests; approve / reject with their chunk id
+openshell provider create --name <name> --type <type> --credential KEY   # value read from $KEY
+# then list it under the group's `providers:` in the policy file
+openshell sandbox list --selector nanoclaw-group=<group id>              # the group's sandboxes
+openshell rule get <sandbox> --status pending                            # blocked requests
+openshell rule approve <sandbox> --chunk-id <id>
 ```
 
 Details, including the gateway configuration and the provider model: [`.claude/skills/add-openshell/SKILL.md`](.claude/skills/add-openshell/SKILL.md) and the console's [README](.claude/skills/add-openshell/scripts/ui/README.md).

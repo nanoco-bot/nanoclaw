@@ -11,7 +11,7 @@ import path from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { chunkEndpoints, parseRuleChunks } from './commands.js';
+import { chunkEndpoints, parseRuleChunks } from './openshell-ops.js';
 import { STATIC_DIR } from './exec.js';
 import { buildProfileYaml, parseGatewayTypes, yamlProfileId } from './provider-types.js';
 import { createHandler, type ExecResult, type UiDeps } from './routes.js';
@@ -123,7 +123,7 @@ describe('parseGatewayTypes / yamlProfileId / chunk endpoints', () => {
       '  Chunk: c1\n  Status: pending\n  Rule: allow_x\n  Binary: /usr/bin/curl\n' +
         '  Endpoints: public-api.granola.ai:443 [L4], b.io:8443\n  Binaries: /usr/bin/curl\n  Hits: 3 (first seen …)\n',
     );
-    expect(c).toMatchObject({ binaries: '/usr/bin/curl', hits: '3 (first seen …)' });
+    expect(c).toMatchObject({ binary: '/usr/bin/curl', hits: '3 (first seen …)' });
     expect(chunkEndpoints(c)).toEqual([
       { host: 'public-api.granola.ai', port: 443 },
       { host: 'b.io', port: 8443 },
@@ -158,19 +158,18 @@ describe('/api/types and /api/gateway', () => {
     });
     const deps: UiDeps = {
       runOpenShell: runOpenShell as unknown as UiDeps['runOpenShell'],
-      dispatchPolicy: vi.fn(),
-      dispatchNcl: vi.fn(async () => ({ ok: true, data: { profiles: [] } })),
-      restartGroup: vi.fn(),
       runCredentialScript: vi.fn(),
-      checkCredentials: () => ({ credentials: 'configured', credentialSource: 'running-service:oauth' }),
+      checkCredentials: () => ({ credentials: 'configured', credentialSource: 'openshell-provider:oauth' }),
       gatewayKind: () => 'openshell',
       listGroups: async () => [],
       groupSessions: async () => [],
       sandboxName: (g, s) => `ncl-${g}-${s}`,
-      changeLog: path.join(dir, 'changes.jsonl'),
-      decisionLog: path.join(dir, 'decisions.jsonl'),
+      restartGroup: vi.fn(),
+      policyFile: path.join(dir, 'policy.yaml'),
+      activityLog: path.join(dir, 'activity.jsonl'),
       staticDir: STATIC_DIR,
     };
+
     server = http.createServer(createHandler(deps));
     await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
     base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;

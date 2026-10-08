@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { parse as parseYaml } from 'yaml';
 
 import { FIXTURE_POLICY, fixtureSpec, fixtureSpecWithAux } from '../spec-fixture.js';
-import { LABELS, type SessionEvent, type SessionKey } from '../types.js';
+import { GROUP_FOLDER_LABEL, LABELS, type SessionEvent, type SessionKey } from '../types.js';
 import { OpenShellSessionDriver, diffSnapshots } from './driver.js';
 import { cliErrorSummary, isNotFound, normalizeOpenShellError, sandboxName } from './realize.js';
 import { FakeOpenShellCli, listJson, quietLogger, sandboxJson } from './fake-cli.js';
@@ -234,7 +234,8 @@ describe('the model provider', () => {
       cli,
       logger: quietLogger,
       modelProvider: 'nanoclaw-test-claude',
-      groupProviders: () => ['github-alice', 'nanoclaw-test-claude'],
+      policy: { providers: ['nanoclaw-test-claude'] },
+      groupPolicy: { [fixtureSpec().labels[GROUP_FOLDER_LABEL]]: { providers: ['github-alice'] } },
     });
     await (await driver.prepare(fixtureSpec())).start();
     const create = cli.callsMatching(/^sandbox create /)[0];

@@ -84,13 +84,10 @@ export interface Logger {
   warn(msg: string, ctx?: Record<string, unknown>): void;
 }
 
-/** Per-group-folder data: a fixed map, or a lookup evaluated at every prepare(). */
-export type GroupLookup<T> = Record<string, T> | ((folder: string) => T | Promise<T>);
-
-async function lookupGroup<T>(source: GroupLookup<T> | undefined, folder: string | undefined, empty: T): Promise<T> {
-  if (!source || !folder) return empty;
-  if (typeof source === 'function') return (await source(folder)) ?? empty;
-  return Object.prototype.hasOwnProperty.call(source, folder) ? source[folder] : empty;
+/** Policy options for every session and per group folder. */
+export interface PolicySource {
+  policy: PolicyOptions;
+  groupPolicy?: Record<string, PolicyOptions>;
 }
 
 export interface OpenShellDriverOptions extends MountPolicy {
@@ -108,19 +105,11 @@ export interface OpenShellDriverOptions extends MountPolicy {
    */
   modelProvider?: string;
   /**
-   * OpenShell gateway provider names each agent group's sandboxes are created
-   * with (`sandbox create --provider`), keyed by group FOLDER like
-   * `groupPolicy`. A function is looked up at every prepare(), so an attach
-   * made after the host started applies to the group's next sandbox without a
-   * restart — register.ts passes the DB-backed lookup (openshell_group_providers).
+   * Read at every prepare() in place of `policy` / `groupPolicy`, so an edit
+   * to the operator's policy file reaches the group's next sandbox without a
+   * restart (register.ts).
    */
-  groupProviders?: GroupLookup<readonly string[]>;
-  /**
-   * Raw egress rules per group FOLDER, independent of any provider; they
-   * ACCUMULATE on top of `policy` + `groupPolicy` egress (mergePolicyOptions).
-   * DB-backed (openshell_group_egress) via register.ts.
-   */
-  groupEgress?: GroupLookup<readonly EgressRule[]>;
+  loadPolicy?: () => PolicySource;
   /** Watch poll interval. Default 2000ms. */
   pollIntervalMs?: number;
   /** Where the transient policy file is written for `--policy`. Default os.tmpdir(). */
@@ -256,22 +245,20 @@ export class OpenShellSessionDriver implements SessionDriver {
 
     // Compile everything up front: a spec this driver cannot realize fails
     // prepare(), before the host arms anything.
-    // The group's durable OpenShell resources: providers to attach and raw
-    // egress rules, read fresh for every new sandbox (no restart, no manual step).
-    const folder = spec.labels[GROUP_FOLDER_LABEL];
-    const [groupProviders, groupEgress] = await Promise.all([
-      lookupGroup(this.#opts.groupProviders, folder, [] as readonly string[]),
-      lookupGroup(this.#opts.groupEgress, folder, [] as readonly EgressRule[]),
-    ]);
+    let source: PolicySource;
+    try {
+      source = this.#opts.loadPolicy?.() ?? { policy: this.#opts.policy ?? {}, groupPolicy: this.#opts.groupPolicy };
+    } catch (err) {
+      throw specInvalid(err instanceof Error ? err.message : String(err));
+    }
+    const options = policyOptionsFor(spec, source.policy, source.groupPolicy);
     const providers = [
-      ...new Set([...(this.#opts.modelProvider ? [this.#opts.modelProvider] : []), ...groupProviders]),
+      ...new Set([...(this.#opts.modelProvider ? [this.#opts.modelProvider] : []), ...(options.providers ?? [])]),
     ];
     for (const p of providers) {
-      // Refused now, not at create: a bad name in the store must not cost an allocation.
+      // Refused now, not at create: a bad name must not cost an allocation.
       if (!PROVIDER_NAME_RE.test(p)) throw specInvalid(`OpenShell provider name '${p}' is not valid`);
     }
-    let options = policyOptionsFor(spec, this.#opts.policy ?? {}, this.#opts.groupPolicy);
-    if (groupEgress.length > 0) options = mergePolicyOptions(options, { egress: groupEgress });
     const pending: PendingRealization = {
       spec,
       policy: compilePolicy(spec, agent, options),

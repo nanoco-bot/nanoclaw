@@ -12,54 +12,33 @@
  * default `docker` selection is unchanged.
  *
  * The factory receives the fully-resolved MountPolicy; everything else the
- * driver owns (here: operator settings from `.env` / the environment).
+ * driver owns comes from `.env` / the environment and the policy file, which
+ * is re-read for every new sandbox.
  */
 import { INSTALL_SLUG } from '../../config.js';
-import { getAgentGroupByFolder } from '../../db/agent-groups.js';
-import { listGroupEgressRules, listGroupProviders } from '../../db/openshell-group-resources.js';
+import { registerSessionDriver } from '../driver-registry.js';
 import { realOpenShellCli } from './cli.js';
 import { openShellGatewayEnv, openShellSettingsEnv } from './config.js';
 import { OpenShellSessionDriver } from './driver.js';
-import type { EgressRule } from './policy.js';
-import { registerSessionDriver } from '../driver-registry.js';
 import { modelProviderName } from './model-provider.js';
+import { DEFAULT_POLICY_FILE } from './policy-file.js';
 import { settingsFromEnv } from './settings.js';
 
 export const OPENSHELL_DRIVER_KIND = 'openshell';
-
-/** OpenShell provider names attached to the group with this folder (openshell_group_providers). */
-export async function dbGroupProviders(folder: string): Promise<string[]> {
-  const group = await getAgentGroupByFolder(folder);
-  return group ? (await listGroupProviders(group.id)).map((p) => p.name) : [];
-}
-
-/** The group's raw network paths (openshell_group_egress), as EgressRules. */
-export async function dbGroupEgress(folder: string): Promise<EgressRule[]> {
-  const group = await getAgentGroupByFolder(folder);
-  if (!group) return [];
-  return (await listGroupEgressRules(group.id)).map(({ name, host, ports, binaries }) => ({
-    name,
-    host,
-    ports,
-    binaries,
-  }));
-}
 
 registerSessionDriver(OPENSHELL_DRIVER_KIND, (policy) => {
   // Read at selection time, not import time: an install that never selects
   // this driver never parses (or fails on) its settings.
   const settingsEnv = openShellSettingsEnv();
-  const settings = settingsFromEnv(settingsEnv);
+  const settings = settingsFromEnv(settingsEnv, undefined, DEFAULT_POLICY_FILE);
   return new OpenShellSessionDriver({
     ...policy,
     cli: realOpenShellCli(settings.bin, openShellGatewayEnv(settingsEnv)),
-    policy: settings.policy,
-    ...(settings.groupPolicy ? { groupPolicy: settings.groupPolicy } : {}),
+    loadPolicy: () => {
+      const fresh = settingsFromEnv(openShellSettingsEnv(), undefined, DEFAULT_POLICY_FILE);
+      return { policy: fresh.policy, ...(fresh.groupPolicy ? { groupPolicy: fresh.groupPolicy } : {}) };
+    },
     modelProvider: modelProviderName(INSTALL_SLUG),
-    // Durable per-group resources from the central DB, read at every sandbox
-    // creation (ncl openshell-provider / openshell-network write them).
-    groupProviders: dbGroupProviders,
-    groupEgress: dbGroupEgress,
     ...(settings.pollIntervalMs ? { pollIntervalMs: settings.pollIntervalMs } : {}),
   });
 });
