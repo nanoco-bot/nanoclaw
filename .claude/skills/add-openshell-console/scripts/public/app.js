@@ -119,6 +119,9 @@ const PROGRAMS = [
   { path: '/usr/local/bin/bun', label: 'bun', on: true },
   { path: '/usr/bin/git', label: 'git', on: false },
 ];
+/** "Always allow" covers the blocked program and the default ones. */
+const alwaysAllowPrograms = (blocked) => [...new Set([blocked, ...PROGRAMS.filter((p) => p.on).map((p) => p.path)])];
+
 function programPicker(container) {
   const custom = el('input', {
     type: 'text',
@@ -712,7 +715,11 @@ function proposalCard(c, sandbox, status) {
   if (status === 'pending') {
     const always = el(
       'button',
-      { class: 'ok sm', type: 'button', title: 'Allow now and for every future sandbox of this group' },
+      {
+        class: 'ok sm',
+        type: 'button',
+        title: 'Allow now and for every future sandbox of this group, from this program and curl, node and bun',
+      },
       'Always allow',
     );
     const once = el(
@@ -737,9 +744,18 @@ function proposalCard(c, sandbox, status) {
             .filter((x) => x.host === t.host)
             .map((x) => x.port)
             .join(','),
-          binaries: [bin],
+          // The program that was blocked, plus the ones agents use to fetch
+          // pages and call APIs: an agent told to prefer curl would otherwise
+          // be refused on a host the browser was approved for.
+          binaries: alwaysAllowPrograms(bin),
         });
-        if (r.ok) toast(`Always allowed ${t.host}`, 'Saved for the group; future sandboxes get it too.');
+        if (r.ok)
+          toast(
+            `Always allowed ${t.host}`,
+            `For ${alwaysAllowPrograms(bin)
+              .map((p) => p.split('/').pop())
+              .join(', ')}. Saved for the group; future sandboxes get it too.`,
+          );
         else
           toast(`Allowed ${t.host} for this sandbox only`, `Saving it for the group failed: ${r.data.error}`, 'warn');
         await loaders.approvals();
@@ -757,7 +773,7 @@ function proposalCard(c, sandbox, status) {
       const go = el('button', { class: 'danger solid sm', type: 'button' }, 'Deny');
       go.addEventListener('click', () =>
         busy(go, async () => {
-          if (await decide('reject', sandbox, c, reason.value || 'denied from the setup UI')) toast(`Denied ${route}`);
+          if (await decide('reject', sandbox, c, reason.value || 'denied from the console')) toast(`Denied ${route}`);
           await loaders.approvals();
         }),
       );

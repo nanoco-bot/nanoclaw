@@ -70,8 +70,14 @@ export interface UiDeps {
   groupSessions(agentGroupId: string): Promise<SessionSummary[]>;
   /** The sandbox name the OpenShell driver gives a session. */
   sandboxName(agentGroupId: string, sessionId: string): string;
-  /** `ncl groups restart --id <group>` on the HOST, which owns the containers. */
-  restartGroup(agentGroupId: string): Promise<{ ok: boolean; data?: unknown; error?: { message: string } }>;
+  /**
+   * `ncl groups restart --id <group> [--message <text>]` on the HOST, which
+   * owns the containers. The message reaches the restarted agent as its first input.
+   */
+  restartGroup(
+    agentGroupId: string,
+    message?: string,
+  ): Promise<{ ok: boolean; data?: unknown; error?: { message: string } }>;
   /** The OpenShell policy file (NANOCLAW_OPENSHELL_POLICY_FILE or the default). */
   policyFile: string;
   /** The console's activity log. */
@@ -338,7 +344,7 @@ export function createHandler(deps: UiDeps): (req: IncomingMessage, res: ServerR
         // agent's own running process; a restart gives it a sandbox with the key.
         let restart: { ok: boolean; restarted?: number; error?: string } | undefined;
         if (body.restart === true && live.some((l) => l.ok)) {
-          const r = await deps.restartGroup(group.id);
+          const r = await deps.restartGroup(group.id, providerAttachedNote(name, type));
           restart = r.ok
             ? { ok: true, restarted: Number((r.data as { restarted?: unknown })?.restarted ?? 0) }
             : { ok: false, error: r.error?.message ?? 'restart failed' };
@@ -500,4 +506,18 @@ export function createHandler(deps: UiDeps): (req: IncomingMessage, res: ServerR
       else res.end();
     }
   };
+}
+
+/**
+ * What the restarted agent is told after a provider is attached. Without it,
+ * an agent that earlier found no access to the service keeps to that
+ * conclusion (or to a browser login) instead of using the new key.
+ */
+export function providerAttachedNote(name: string, type: string): string {
+  const what = type ? `${name} (${type})` : name;
+  return (
+    `[OpenShell] The operator attached the provider ${what} to you. Its key variable, API host and header ` +
+    'are listed in $NANOCLAW_OPENSHELL_ACCESS. For that service, use its API with curl as the openshell-gateway ' +
+    'skill describes, not the browser. Nothing to reply unless the user asked for something that needs it.'
+  );
 }

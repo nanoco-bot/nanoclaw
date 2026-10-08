@@ -5,14 +5,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { credentialScriptEnv } from './openshell-ops.js';
-import {
-  PROJECT_ROOT,
-  execCapture,
-  openShellChildEnv,
-  realDeps,
-  tsxLoaderUrl,
-  type ExecFileLike,
-} from './exec.js';
+import { PROJECT_ROOT, execCapture, openShellChildEnv, realDeps, tsxLoaderUrl, type ExecFileLike } from './exec.js';
 
 type Call = { file: string; args: string[]; options: { env: NodeJS.ProcessEnv; cwd?: string; timeout?: number } };
 
@@ -125,7 +118,7 @@ describe('realDeps (execFile mocked)', () => {
     expect(call.options.cwd).toBe(PROJECT_ROOT);
   });
 
-  it('runCredentialScript runs setup\'s gateway-auth step under this node with the tsx loader and the given env', async () => {
+  it("runCredentialScript runs setup's gateway-auth step under this node with the tsx loader and the given env", async () => {
     const f = fakeExecFile({ stdout: 'stored' });
     const env = credentialScriptEnv({ kind: 'api-key', value: 'sk-ant-api03-FAKE' }, { PATH: '/bin' });
     await realDeps(PROJECT_ROOT, f.run).runCredentialScript(env);

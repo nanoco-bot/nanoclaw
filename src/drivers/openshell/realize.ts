@@ -59,8 +59,10 @@ export interface CreateArgsInput {
   name: string;
   policyPath: string;
   driverConfig: DriverConfig | null;
-  /** OpenShell gateway provider names to attach (the group's, from openshell_group_providers). */
+  /** OpenShell provider names to attach (the install's Claude provider and the group's, from the policy file). */
   providers?: readonly string[];
+  /** Driver-owned, non-secret variables (the access manifest); set last. */
+  extraEnv?: Record<string, string>;
 }
 
 /**
@@ -92,13 +94,14 @@ export function createArgs({
   policyPath,
   driverConfig,
   providers = [],
+  extraEnv = {},
 }: CreateArgsInput): string[] {
   const args = ['sandbox', 'create', '--name', name, '--from', sandboxImage(container.image), '--policy', policyPath];
   if (driverConfig) args.push('--driver-config-json', JSON.stringify(driverConfig));
   for (const [k, v] of Object.entries(sandboxLabels(spec, container))) args.push('--label', `${k}=${v}`);
   // env first, then the contributed lane: on a key collision the contributed
   // value wins (the ordering the seam states as contract).
-  const env = { ...container.env, ...(container.contributedEnv ?? {}) };
+  const env = { ...container.env, ...(container.contributedEnv ?? {}), ...extraEnv };
   for (const [k, v] of Object.entries(env)) args.push('--env', `${k}=${v}`);
   if (spec.resources.cpus) args.push('--cpu', spec.resources.cpus);
   if (spec.resources.memoryMb) args.push('--memory', memoryQuantity(spec.resources.memoryMb));

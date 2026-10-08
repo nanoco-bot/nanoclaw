@@ -80,6 +80,20 @@ given.
 - The credential gateway refuses a session when this provider is missing, and the error names
   the sign-in step that fixes it.
 
+**What the agent is told.** Each sandbox gets `NANOCLAW_OPENSHELL_ACCESS`, a JSON description of
+what its group can reach. It lists each provider's service, the variable holding its key, its API
+host, the header to send, its access level and its allowed programs, plus the group's network
+rules. It holds names and hosts only, never a key. The driver builds it when it creates the
+sandbox, from the policy file and each provider's service type, and a failed lookup never blocks
+the sandbox. The agent guidance (the `openshell-gateway` container skill) tells the agent to:
+
+- check that description first;
+- call a service's API with curl rather than opening its website;
+- fetch web pages with curl before reaching for the browser.
+
+When the console attaches a provider and restarts the agent, it also sends the agent a short note
+saying so.
+
 ## Security model
 
 ### What OpenShell enforces

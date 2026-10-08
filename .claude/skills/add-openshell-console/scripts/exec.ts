@@ -100,14 +100,14 @@ export function realDeps(projectRoot: string = PROJECT_ROOT, run: ExecFileLike =
       }
       return execCapture(run, bin, args, { env: openShellChildEnv(env, process.env, settingsEnv), cwd: projectRoot });
     },
-    async restartGroup(agentGroupId) {
+    async restartGroup(agentGroupId, message) {
       // The host owns the containers; this process does not. Ask it over the
       // ncl socket, as the host caller (filesystem access to data/ is the gate).
       try {
         const res = await new SocketTransport(path.join(projectRoot, 'data', 'ncl.sock')).sendFrame({
           id: `ui-restart-${randomUUID()}`,
           command: 'groups-restart',
-          args: { id: agentGroupId },
+          args: { id: agentGroupId, ...(message ? { message } : {}) },
         });
         return res.ok ? { ok: true, data: res.data } : { ok: false, error: res.error };
       } catch (err) {

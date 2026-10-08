@@ -244,6 +244,59 @@ describe('the model provider', () => {
   });
 });
 
+describe('the access manifest', () => {
+  const folder = fixtureSpec().labels[GROUP_FOLDER_LABEL];
+  const accessArg = (create: string[]) =>
+    create.find((arg, i) => create[i - 1] === '--env' && arg.startsWith('NANOCLAW_OPENSHELL_ACCESS='));
+
+  it("tells the agent its group's services and hosts, without the model provider", async () => {
+    const cli = new FakeOpenShellCli();
+    cli.rules = [
+      { match: /^sandbox get /, fails: NOT_FOUND },
+      {
+        match: /^provider list -o json$/,
+        stdout: JSON.stringify({ providers: [{ name: 'granola-alice', type: 'granola' }] }),
+      },
+      {
+        match: /^provider profile export granola$/,
+        stdout:
+          'credentials: [{env_vars: [GRANOLA_API_KEY], auth_style: bearer}]\nendpoints: [{host: public-api.granola.ai}]\n',
+      },
+      { match: /^sandbox create /, stdout: '' },
+    ];
+    const driver = new OpenShellSessionDriver({
+      ...FIXTURE_POLICY,
+      cli,
+      logger: quietLogger,
+      modelProvider: 'nanoclaw-test-claude',
+      groupPolicy: {
+        [folder]: {
+          providers: ['granola-alice'],
+          egress: [{ name: 'hn', host: 'news.ycombinator.com', ports: [443], binaries: ['/usr/bin/curl'] }],
+        },
+      },
+    });
+    await (await driver.prepare(fixtureSpec())).start();
+    const arg = accessArg(cli.callsMatching(/^sandbox create /)[0])!;
+    const manifest = JSON.parse(arg.slice('NANOCLAW_OPENSHELL_ACCESS='.length));
+    expect(manifest.services.map((s: { provider: string }) => s.provider)).toEqual(['granola-alice']);
+    expect(manifest.services[0].endpoints).toEqual(['public-api.granola.ai:443']);
+    expect(manifest.hosts[0].host).toBe('news.ycombinator.com');
+  });
+
+  it('nothing configured: no variable, and no extra CLI call', async () => {
+    const cli = new FakeOpenShellCli();
+    cli.rules = [
+      { match: /^sandbox get /, fails: NOT_FOUND },
+      { match: /^sandbox create /, stdout: '' },
+    ];
+    const driver = new OpenShellSessionDriver({ ...FIXTURE_POLICY, cli, logger: quietLogger });
+    await (await driver.prepare(fixtureSpec())).start();
+    expect(accessArg(cli.callsMatching(/^sandbox create /)[0])).toBeUndefined();
+    expect(cli.callsMatching(/^provider /)).toEqual([]);
+  });
+});
+
 describe('isNotFound: only a missing SANDBOX reads as "gone"', () => {
   it.each([
     'Error:   × code: \'Some requested entity was not found\', message: "sandbox not found"',

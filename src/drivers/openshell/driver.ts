@@ -37,6 +37,7 @@ import {
   type EgressRule,
   type PolicyOptions,
 } from './policy.js';
+import { ACCESS_ENV, buildAccessManifest, renderAccessManifest } from './access-manifest.js';
 import { mergePolicyOptions, policyOptionsFor } from './group-policy.js';
 import { assertHostMounts, type Lstat } from './host-mount.js';
 import {
@@ -155,6 +156,8 @@ interface PendingRealization {
   driverConfig: DriverConfig | null;
   /** OpenShell providers to attach at create (the group's). */
   providers: readonly string[];
+  /** The group's own providers and network rules, described to the agent at create (access-manifest.ts). */
+  access: PolicyOptions;
 }
 
 export class OpenShellSessionDriver implements SessionDriver {
@@ -264,6 +267,10 @@ export class OpenShellSessionDriver implements SessionDriver {
       policy: compilePolicy(spec, agent, options),
       driverConfig: compileDriverConfig(agent),
       providers,
+      access: {
+        providers: (options.providers ?? []).filter((p) => p !== this.#opts.modelProvider),
+        egress: options.egress ?? [],
+      },
     };
     // The bind list and the Landlock policy must agree on every mount's access.
     assertDriverConfigMatchesPolicy(pending.policy, pending.driverConfig);
@@ -509,17 +516,38 @@ class OpenShellHandle implements SessionHandle {
     private readonly tmpDir: string | undefined,
   ) {}
 
+  /**
+   * What the sandbox can reach, for the agent (NANOCLAW_OPENSHELL_ACCESS).
+   * Best-effort: a failed lookup is logged and the sandbox starts without it.
+   */
+  async #accessEnv(access: PolicyOptions): Promise<Record<string, string>> {
+    try {
+      const manifest = await buildAccessManifest(access, this.cli);
+      if (manifest.services.length === 0 && manifest.hosts.length === 0) return {};
+      return { [ACCESS_ENV]: renderAccessManifest(manifest) };
+    } catch (err) {
+      this.log.warn('OpenShell access manifest unavailable; starting without it', {
+        name: this.name,
+        err: err instanceof Error ? err.message : String(err),
+      });
+      return {};
+    }
+  }
+
   /** Realize: write the compiled policy, `sandbox create --detach`, roll back on failure. */
   async start(): Promise<void> {
     if (this.#started || !this.pending) return; // idempotent; an adopted session is already running
     this.#started = true;
-    const { spec, policy, driverConfig, providers } = this.pending;
+    const { spec, policy, driverConfig, providers, access } = this.pending;
     const agent = spec.containers.find((c) => c.role === 'agent')!;
+    const extraEnv = await this.#accessEnv(access);
     const dir = await fs.mkdtemp(path.join(this.tmpDir ?? os.tmpdir(), 'nanoclaw-openshell-'));
     const policyPath = path.join(dir, 'policy.yaml');
     try {
       await fs.writeFile(policyPath, renderPolicyYaml(policy), { mode: 0o600 });
-      await this.cli.run(createArgs({ spec, container: agent, name: this.name, policyPath, driverConfig, providers }));
+      await this.cli.run(
+        createArgs({ spec, container: agent, name: this.name, policyPath, driverConfig, providers, extraEnv }),
+      );
     } catch (err) {
       this.log.warn('OpenShell sandbox create failed', {
         name: this.name,

@@ -113,7 +113,9 @@ openshell rule reject <sandbox> --chunk-id <id> --reason "…"
 ```
 
 An approval applies only to that sandbox and lasts until the sandbox is recreated. To keep it,
-add the rule to the group in the policy file. The console's **Always allow** does both.
+add the rule to the group in the policy file. The console's **Always allow** does both. The rule
+it saves allows the blocked program plus curl, node and bun, so the host still works when the
+agent fetches it another way.
 
 ## The console
 

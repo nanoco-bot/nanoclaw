@@ -258,7 +258,10 @@ describe('providers', () => {
 
   it('restart only when asked and the attach reached a running sandbox', async () => {
     const r = await call('POST', '/api/groups/providers', { group: 'ag-1', name: 'granola-alice', restart: true });
-    expect(deps.restartGroup).toHaveBeenCalledWith('ag-1');
+    // The restarted agent is told what it got, so it uses the API instead of
+    // sticking to an earlier "no access" conclusion.
+    expect(deps.restartGroup).toHaveBeenCalledWith('ag-1', expect.stringContaining('granola-alice'));
+    expect(deps.restartGroup.mock.calls[0][1]).toContain('$NANOCLAW_OPENSHELL_ACCESS');
     expect(r.json.restart).toEqual({ ok: true, restarted: 1 });
     sessions['ag-1'] = [];
     const quiet = await call('POST', '/api/groups/providers', { group: 'ag-1', name: 'other', restart: true });
