@@ -10,6 +10,11 @@
  * OpenShell v0.1.2 ships no provider profiles, so NanoClaw brings the two it
  * needs: one for a Claude subscription OAuth token (`Authorization: Bearer`)
  * and one for an Anthropic API key (`x-api-key`).
+ *
+ * The provider also carries the sandbox's only route to the model: OpenShell
+ * adds its endpoint as an L7 rule when the provider is attached. No separate
+ * rule may name that endpoint, because OpenShell refuses a credentialed
+ * endpoint in an L4-only rule.
  */
 import { PROVIDER_NAME_RE } from './realize.js';
 
@@ -40,9 +45,6 @@ export const MODEL_BINARIES = [
   '/usr/local/bin/node',
   '/usr/local/bin/bun',
 ] as const;
-
-/** The rule realizing the session's network access: the model API, from the model binaries. */
-export const MODEL_EGRESS = { ports: [MODEL_PORT], binaries: [...MODEL_BINARIES] };
 
 /** One provider per install, so several NanoClaw installs can share an OpenShell gateway. */
 export function modelProviderName(installSlug: string): string {

@@ -22,7 +22,7 @@ import { openShellGatewayEnv, openShellSettingsEnv } from './config.js';
 import { OpenShellSessionDriver } from './driver.js';
 import type { EgressRule } from './policy.js';
 import { registerSessionDriver } from '../driver-registry.js';
-import { MODEL_EGRESS, modelProviderName } from './model-provider.js';
+import { modelProviderName } from './model-provider.js';
 import { settingsFromEnv } from './settings.js';
 
 export const OPENSHELL_DRIVER_KIND = 'openshell';
@@ -53,7 +53,7 @@ registerSessionDriver(OPENSHELL_DRIVER_KIND, (policy) => {
   return new OpenShellSessionDriver({
     ...policy,
     cli: realOpenShellCli(settings.bin, openShellGatewayEnv(settingsEnv)),
-    policy: { gatewayEgress: MODEL_EGRESS, ...settings.policy },
+    policy: settings.policy,
     ...(settings.groupPolicy ? { groupPolicy: settings.groupPolicy } : {}),
     modelProvider: modelProviderName(INSTALL_SLUG),
     // Durable per-group resources from the central DB, read at every sandbox
