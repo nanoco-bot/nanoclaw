@@ -1,5 +1,5 @@
 /**
- * Per-agent-group views for the setup console, as pure functions: which
+ * Per-agent-group views for the console, as pure functions: which
  * sandboxes of a group can take a live change, newest running first.
  * No I/O here; routes.ts feeds them.
  */

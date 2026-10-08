@@ -1,5 +1,5 @@
 /**
- * The setup console's API, end to end over real HTTP: group changes land in
+ * The console's API, end to end over real HTTP: group changes land in
  * the policy file and are applied live to the group's running sandboxes
  * through a recording fake `openshell`; blocked requests and the activity log
  * come back as the page reads them.

@@ -324,11 +324,23 @@ export function gatewayRestartCommand(platform: string): string {
     : 'systemctl --user restart openshell-gateway';
 }
 
+/**
+ * The gateway config file the local gateway reads. On macOS the Homebrew
+ * service uses its own $(brew --prefix)/var/openshell/gateway.toml while
+ * ~/.config/openshell/gateway.toml is absent, so creating the latter would
+ * replace the formula's config rather than extend it.
+ */
+export function gatewayConfigLocation(platform: string): string {
+  return platform === 'macos'
+    ? '~/.config/openshell/gateway.toml if it exists, otherwise $(brew --prefix)/var/openshell/gateway.toml'
+    : '~/.config/openshell/gateway.toml';
+}
+
 /** Exactly what to change, for a fail() hint. */
 export function gatewayConfigRemedy(platform: string): string {
   return [
     'NanoClaw mounts each session into its sandbox, which needs these OpenShell gateway settings.',
-    'Add them to ~/.config/openshell/gateway.toml (a new file starts with "[openshell]" and "version = 2"):',
+    `Add them to ${gatewayConfigLocation(platform)} (a new file starts with "[openshell]" and "version = 2"):`,
     '',
     NANOCLAW_GATEWAY_SETTINGS,
     '',
@@ -522,7 +534,7 @@ export async function ensureOpenShellRuntime(opts: EnsureOptions): Promise<Ensur
       ok: false,
       error: 'compute_driver',
       message: `OpenShell's gateway uses the ${drivers.join(', ')} compute driver; NanoClaw's sandboxes need its Docker driver.`,
-      hint: 'Make sure Docker is running, set `compute_driver = "docker"` under [openshell.gateway] in ~/.config/openshell/gateway.toml, then restart the gateway.',
+      hint: `Make sure Docker is running, set \`compute_driver = "docker"\` under [openshell.gateway] in ${gatewayConfigLocation(opts.platform)}, then restart the gateway.`,
     };
   }
 

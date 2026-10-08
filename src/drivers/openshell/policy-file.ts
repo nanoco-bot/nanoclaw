@@ -1,7 +1,7 @@
 /**
  * The operator's OpenShell policy file: per-agent-group providers and network
  * rules, plus defaults (shape in group-policy.ts). The driver re-reads it for
- * every new sandbox; the setup console edits it through the helpers below.
+ * every new sandbox; the console edits it through the helpers below.
  *
  * Edits keep the operator's comments and formatting (YAML document API), are
  * validated with the driver's own strict parser before anything is written,

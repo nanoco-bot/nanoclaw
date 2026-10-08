@@ -1,5 +1,5 @@
 /**
- * What the setup console runs against OpenShell, as pure argv builders and
+ * What the console runs against OpenShell, as pure argv builders and
  * parsers, plus the one fan-out it needs: applying a group change to the
  * group's running sandboxes. The group's durable settings live in the policy
  * file (src/drivers/openshell/policy-file.ts); these commands change what is
@@ -145,7 +145,7 @@ export function ruleDecideArgs(
   const id = String(chunkId ?? '').trim();
   if (!/^[A-Za-z0-9-]{1,64}$/.test(id)) throw new Error('A chunk id is required');
   if (decision === 'approve') return ['rule', 'approve', sandbox, '--chunk-id', id];
-  const why = String(reason ?? '').trim() || 'denied from the setup console';
+  const why = String(reason ?? '').trim() || 'denied from the console';
   return ['rule', 'reject', sandbox, '--chunk-id', id, '--reason', why];
 }
 

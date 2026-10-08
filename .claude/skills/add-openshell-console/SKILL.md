@@ -5,7 +5,7 @@ description: Add a local web console for an OpenShell-sandboxed NanoClaw install
 
 # Add the OpenShell console
 
-A small web page for an install that runs its agents in NVIDIA OpenShell sandboxes (`NANOCLAW_RUNTIME_DRIVER=openshell`, set up by `/add-openshell`). It edits the OpenShell policy file and runs the `openshell` CLI; it holds no state of its own beyond an activity log. What each tab does is in `scripts/README.md`.
+A small web page for an install that runs its agents in NVIDIA OpenShell sandboxes (`NANOCLAW_RUNTIME_DRIVER=openshell`, set up by `/add-openshell`). It edits the OpenShell policy file and runs the `openshell` CLI; it holds no state of its own beyond an activity log. What each tab does is in `scripts/README.md`; the policy file and the `openshell` commands it stands in for are in [docs/openshell-operations.md](../../../docs/openshell-operations.md#daily-tasks).
 
 It has **no login of its own**. It binds `127.0.0.1` by default and answers only to local host names, so it is reached over an SSH tunnel: `ssh -L 8790:127.0.0.1:8790 <host>`, then `http://127.0.0.1:8790/`.
 

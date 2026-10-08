@@ -8,8 +8,7 @@
  * so every OpenShell sandbox create fails. The derived image moves WORKDIR to
  * /sandbox and changes nothing else.
  *
- * Extracted from docs/openshell-demo/clean-install-demo.sh (step 3b), which
- * did this by hand; that script now calls this module. Built by:
+ * Built by:
  *   - setup's `container` step, after the base is built or pulled,
  *   - `setup --step openshell` when it enables OpenShell on a copy that already
  *     has a base image,

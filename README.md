@@ -102,37 +102,39 @@ See [docs/v1-to-v2-changes.md](docs/v1-to-v2-changes.md) for what's different an
 
 ## OpenShell sandboxing
 
-[NVIDIA OpenShell](https://github.com/NVIDIA/OpenShell) runs each agent session in a sandbox that enforces what it may reach on the network and on disk. NanoClaw supports it as a standard install option, next to plain Docker.
+[NVIDIA OpenShell](https://github.com/NVIDIA/OpenShell) can run each agent session in a sandbox
+that enforces what the agent may reach on the network and on disk. It also holds the agent's keys,
+so a real key never enters the sandbox. NanoClaw supports it as an install option, next to plain
+Docker.
 
-**Turn it on.** Answer yes to *"Enable OpenShell sandboxing?"* in `bash nanoclaw.sh`, or set `NANOCLAW_OPENSHELL=true`. Setup then:
-- installs OpenShell at the release pinned in `versions.json` (currently v0.1.2) with NVIDIA's installer, and starts its gateway;
-- configures the gateway to allow NanoClaw's session mounts. On Linux setup writes `~/.config/openshell/gateway.toml`; on macOS it prints the lines to add;
-- installs NanoClaw's model relay, so the Claude credential stays on the host and never enters a sandbox;
-- starts the setup web console and prints its URL.
+**Turn it on.** Answer yes to *"Enable OpenShell sandboxing?"* in `bash nanoclaw.sh`, or pass
+`--openshell` (or set `NANOCLAW_OPENSHELL=true`). Setup installs OpenShell at the release pinned in
+`versions.json` (currently v0.1.2) and checks its gateway. It then selects the `openshell` runtime
+driver and credential gateway, which replace OneCLI on this install, and stores your Claude
+credential in OpenShell. OpenShell runs on Linux (amd64 or arm64) and on Apple silicon Macs, and
+it still needs Docker.
 
-It runs on Linux (amd64/arm64, Debian- or RPM-based) and Apple silicon Macs; NVIDIA publishes no Intel Mac build. Docker is still required, because OpenShell's gateway runs sandboxes in it. An `openshell` already on your `PATH` that is older than the pinned release stops setup, with instructions to remove it.
+OpenShell's gateway must allow NanoClaw's session bind mounts. On Linux, setup writes
+`~/.config/openshell/gateway.toml` when you have none. Otherwise, and on macOS, it prints the lines
+to add. See [Gateway configuration](docs/openshell-operations.md#gateway-configuration).
 
-**What you get, per agent group:**
-- **Providers.** Give an agent a key for one service, such as GitHub or Granola, plus network access to that service only. The key goes to OpenShell; inside the sandbox the variable holds a placeholder that OpenShell swaps for the real key on the way out.
-- **Network access.** Allow hosts the agent may reach without a provider. Each rule names the programs allowed to connect.
-- **Approvals.** When an agent tries a host it isn't allowed to reach, OpenShell blocks the request and lists it for you. Allow it for the running sandbox, allow it always (saved for the group), or deny it.
-- **Activity.** Every change and decision, allowed and denied alike.
-
-Providers and network rules are saved per group in the OpenShell policy file (`data/openshell/policy.yaml` by default), so every new sandbox gets them; the console also applies them to the group's running sandboxes immediately. A newly attached key reaches the agent after its sandbox restarts, which the console does for you.
-
-**The console.** A small web page for all of the above, plus OpenShell's status and the Claude credential. It also creates *service types*, OpenShell's definition of a service (its hosts, how the key is sent, which programs may connect), since OpenShell ships none. It listens on port 8790 by default (`NANOCLAW_OPENSHELL_UI_PORT`). **It has no login of its own:** reach it only through a password-protected reverse proxy and keep the port firewalled.
-
-**From the command line:**
+**Per agent group** you can give an agent a key for one service (an OpenShell *provider*, such as
+Granola or GitHub), allow extra hosts, and allow or deny the requests OpenShell blocked. Providers
+and network rules are saved in `data/openshell/policy.yaml`, which every new sandbox reads. The
+`openshell` CLI changes the sandboxes that are already running:
 
 ```bash
-openshell provider create --name <name> --type <type> --credential KEY   # value read from $KEY
-# then list it under the group's `providers:` in the policy file
-openshell sandbox list --selector nanoclaw-group=<group id>              # the group's sandboxes
-openshell rule get <sandbox> --status pending                            # blocked requests
+openshell sandbox list --selector nanoclaw-group=<group id>   # a group's sandboxes
+openshell rule get <sandbox> --status pending                 # requests OpenShell blocked
 openshell rule approve <sandbox> --chunk-id <id>
 ```
 
-Details, including the gateway configuration and the provider model: [`.claude/skills/add-openshell/SKILL.md`](.claude/skills/add-openshell/SKILL.md) and the console's [README](.claude/skills/add-openshell/scripts/ui/README.md).
+**Console (optional).** `/add-openshell-console` adds a local web page for all of the above. It
+has no login, listens on `127.0.0.1` only, and is reached over an SSH tunnel.
+
+Read [docs/openshell.md](docs/openshell.md) for how it works and what it protects, and
+[docs/openshell-operations.md](docs/openshell-operations.md) to install it, use it from day to
+day, and troubleshoot it.
 
 ## Accounts and what leaves your machine
 

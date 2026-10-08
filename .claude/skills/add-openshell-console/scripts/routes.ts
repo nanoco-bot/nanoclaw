@@ -1,5 +1,5 @@
 /**
- * Same-origin JSON API + static page for the OpenShell setup console.
+ * Same-origin JSON API + static page for the OpenShell console.
  *
  * A group's providers and network rules are saved in the OpenShell policy
  * file (the driver reads it for every new sandbox) and applied to the group's
