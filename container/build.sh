@@ -223,7 +223,7 @@ fi
 # just built or pulled (WORKDIR moved out of the /workspace mount). No-op on
 # every other install. Same module setup's container step uses.
 if [ "$TAG" = "latest" ]; then
-    (cd "$PROJECT_ROOT" && pnpm --silent exec tsx setup/lib/openshell-image.ts --if-configured)
+    (cd "$PROJECT_ROOT" && pnpm --silent exec tsx setup/openshell/image.ts --if-configured)
 fi
 
 echo ""

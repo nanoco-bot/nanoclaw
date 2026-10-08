@@ -11,7 +11,7 @@ import {
   openShellImageDockerfile,
   workdirConflicts,
   type DockerRunner,
-} from './openshell-image.js';
+} from './image.js';
 
 function fakeDocker(opts: { base?: boolean; build?: boolean; workdir?: string } = {}) {
   const calls: { args: string[]; input?: string }[] = [];

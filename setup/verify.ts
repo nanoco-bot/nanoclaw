@@ -13,12 +13,8 @@ import { readEnvFile } from '../src/env.js';
 import { log } from '../src/log.js';
 import { getLaunchdLabel, getSystemdUnit } from '../src/install-slug.js';
 import { inspectCentralDb } from './central-db-inspection.js';
-import {
-  inspectOpenShellRuntime,
-  storedModelCredential,
-  SUPERVISOR_IMAGE_KEY,
-  type RuntimeReport,
-} from './lib/openshell-runtime.js';
+import type { RuntimeReport } from './openshell/runtime.js';
+import { checkOpenShellRuntime, openShellCredentials, openShellStatusFields } from './openshell/verify.js';
 import { inspectAgentImage, readImageSource } from './lib/registry-state.js';
 import { getPlatform, getServiceManager, hasSystemd, isRoot } from './platform.js';
 import { emitStatus } from './status.js';
@@ -131,7 +127,19 @@ export async function run(_args: string[]): Promise<void> {
   }
 
   // 3. Check credentials
-  const { credentials, credentialSource } = checkCredentials(projectRoot);
+  let credentials = 'missing';
+  const envFile = path.join(projectRoot, '.env');
+  if (fs.existsSync(envFile)) {
+    const envContent = fs.readFileSync(envFile, 'utf-8');
+    if (
+      /^(CLAUDE_CODE_OAUTH_TOKEN|ANTHROPIC_API_KEY|ANTHROPIC_AUTH_TOKEN|NANOCLAW_GATEWAY_PROVIDER)=/m.test(envContent)
+    ) {
+      credentials = 'configured';
+    }
+  }
+  // OpenShell keeps the credential in OpenShell, not in .env.
+  const openshellCredentials = openShellCredentials(projectRoot);
+  if (openshellCredentials) credentials = openshellCredentials.credentials;
 
   // 3b. OpenShell copies only: its gateway answers and the supervisor image it
   //     pins every sandbox to is still in Docker (null on every other copy).
@@ -263,7 +271,7 @@ export async function run(_args: string[]): Promise<void> {
     SERVICE: service,
     CONTAINER_RUNTIME: containerRuntime,
     CREDENTIALS: credentials,
-    ...(credentialSource ? { CREDENTIAL_SOURCE: credentialSource } : {}),
+    ...(openshellCredentials ? { CREDENTIAL_SOURCE: openshellCredentials.credentialSource } : {}),
     CONFIGURED_CHANNELS: configuredChannels.join(','),
     CHANNEL_AUTH: JSON.stringify(channelAuth),
     REGISTERED_GROUPS: registeredGroups,
@@ -274,13 +282,7 @@ export async function run(_args: string[]): Promise<void> {
     // versions.json. Empty for a locally built image — it has never had one.
     IMAGE_DIGEST: image.registryDigest ?? '',
     DERIVED_GROUPS: derivedGroups,
-    ...(openshell
-      ? {
-          OPENSHELL_GATEWAY: openshell.gateway,
-          OPENSHELL_SUPERVISOR_IMAGE: openshell.supervisorImage,
-          ...(openshell.supervisorImageRef ? { OPENSHELL_SUPERVISOR_IMAGE_REF: openshell.supervisorImageRef } : {}),
-        }
-      : {}),
+    ...openShellStatusFields(openshell),
     ...(slackInstall ? { SLACK_INSTALL: slackInstall } : {}),
     ...(slackWiringPending ? { WIRING: 'pending_slack_install' } : wiringPending ? { WIRING: 'pending_first_dm' } : {}),
     STATUS: status,
@@ -288,70 +290,6 @@ export async function run(_args: string[]): Promise<void> {
   });
 
   if (status === 'failed') process.exit(1);
-}
-
-/**
- * Is there a model credential where the selected gateway actually keeps it?
- * For the OpenShell gateway that is an OpenShell provider, so the answer comes
- * from OpenShell: a gateway name in .env says nothing about whether it holds
- * a key. Other gateways keep the existing .env-based check.
- */
-export function checkCredentials(
-  projectRoot: string,
-  storedKind: (root: string) => string | null = (root) => storedModelCredential(root),
-): { credentials: 'configured' | 'missing'; credentialSource: string } {
-  const gatewayKind = (
-    process.env.NANOCLAW_GATEWAY_PROVIDER ||
-    readEnvFile(['NANOCLAW_GATEWAY_PROVIDER'], projectRoot).NANOCLAW_GATEWAY_PROVIDER ||
-    ''
-  )
-    .trim()
-    .toLowerCase();
-  if (gatewayKind === 'openshell') {
-    const kind = storedKind(projectRoot);
-    return { credentials: kind ? 'configured' : 'missing', credentialSource: `openshell-provider:${kind ?? 'none'}` };
-  }
-  const envFile = path.join(projectRoot, '.env');
-  if (fs.existsSync(envFile)) {
-    const envContent = fs.readFileSync(envFile, 'utf-8');
-    if (
-      /^(CLAUDE_CODE_OAUTH_TOKEN|ANTHROPIC_API_KEY|ANTHROPIC_AUTH_TOKEN|NANOCLAW_GATEWAY_PROVIDER)=/m.test(envContent)
-    ) {
-      return { credentials: 'configured', credentialSource: '' };
-    }
-  }
-  return { credentials: 'missing', credentialSource: '' };
-}
-
-/**
- * The OpenShell runtime, on a copy whose driver is `openshell`; null on every
- * other copy, which this never touches. Read-only (inspectOpenShellRuntime):
- * whether the gateway answers, and whether the supervisor image it runs every
- * sandbox's supervisor from is still in Docker. That image goes missing after
- * an `image prune -a`, and from then on every sandbox create fails until it is
- * pulled again — the gateway resolves it only when it starts.
- */
-export function checkOpenShellRuntime(
-  projectRoot: string,
-  inspect: typeof inspectOpenShellRuntime = inspectOpenShellRuntime,
-): RuntimeReport | null {
-  const keys = [
-    'NANOCLAW_RUNTIME_DRIVER',
-    'OPENSHELL_BIN',
-    'OPENSHELL_GATEWAY',
-    'OPENSHELL_GATEWAY_ENDPOINT',
-    SUPERVISOR_IMAGE_KEY,
-  ];
-  const fromFile = readEnvFile(keys, projectRoot);
-  const get = (key: string) => process.env[key]?.trim() || fromFile[key]?.trim() || '';
-  if (get('NANOCLAW_RUNTIME_DRIVER').toLowerCase() !== 'openshell') return null;
-  const env: NodeJS.ProcessEnv = {};
-  for (const key of ['OPENSHELL_GATEWAY', 'OPENSHELL_GATEWAY_ENDPOINT']) if (get(key)) env[key] = get(key);
-  return inspect({
-    bin: get('OPENSHELL_BIN') || 'openshell',
-    env,
-    supervisorOverride: get(SUPERVISOR_IMAGE_KEY) || undefined,
-  });
 }
 
 /**

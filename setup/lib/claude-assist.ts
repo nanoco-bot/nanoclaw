@@ -49,7 +49,7 @@ export const STEP_FILES: Record<string, string[]> = {
   bootstrap: ['setup.sh', 'setup/install-node.sh', 'nanoclaw.sh'],
   environment: ['setup/environment.ts'],
   container: ['setup/container.ts', 'setup/install-docker.sh', 'container/Dockerfile'],
-  'openshell-install': ['setup/openshell-install.ts', 'setup/install-openshell.sh', 'setup/lib/openshell-runtime.ts'],
+  'openshell-install': ['setup/openshell/install-step.ts', 'setup/openshell/install.sh', 'setup/openshell/runtime.ts'],
   gateway: ['setup/gateways/install.ts', 'setup/gateways/catalog.ts'],
   auth: ['setup/gateways/auth-step.ts', 'setup/gateways/install.ts'],
   mounts: ['setup/mounts.ts'],

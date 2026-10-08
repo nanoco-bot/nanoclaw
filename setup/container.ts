@@ -9,7 +9,7 @@ import { setTimeout as sleep } from 'timers/promises';
 
 import { log } from '../src/log.js';
 import { getDefaultContainerImage } from '../src/install-slug.js';
-import { buildOpenShellImage, openShellConfigured } from './lib/openshell-image.js';
+import { buildOpenShellImage, openShellConfigured } from './openshell/image.js';
 import { commandExists, getPlatform } from './platform.js';
 import { emitStatus } from './status.js';
 

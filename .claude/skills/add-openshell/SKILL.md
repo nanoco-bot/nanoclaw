@@ -13,7 +13,7 @@ Enable the driver first. `pnpm exec tsx setup/index.ts --step openshell` install
 
 Two different things are called a gateway here. OpenShell's gateway is its control plane, the `openshell-gateway` service on `127.0.0.1:17670` that creates and polices sandboxes. This skill is NanoClaw's `openshell` gateway, the model relay. Setup installs the first with NVIDIA's installer and applies the second through the gateway step, so neither is installed twice.
 
-`setup/install-openshell.sh` runs NVIDIA's installer at the release pinned as `openshell` in the root `versions.json`, the release the driver is verified against. Set `OPENSHELL_VERSION` to install another release. On Linux it installs the Debian or RPM package and starts the gateway as a systemd user service. On an Apple silicon Mac it installs the Homebrew formula and its `brew services` gateway. Intel Macs are not supported, because NVIDIA publishes no Intel build, and setup stops there with that reason. When `openshell` is already on `PATH`, the script changes nothing. The setup wizard runs it as the `openshell-install` step after the container step, because OpenShell's gateway needs Docker.
+`setup/openshell/install.sh` runs NVIDIA's installer at the release pinned as `openshell` in the root `versions.json`, the release the driver is verified against. Set `OPENSHELL_VERSION` to install another release. On Linux it installs the Debian or RPM package and starts the gateway as a systemd user service. On an Apple silicon Mac it installs the Homebrew formula and its `brew services` gateway. Intel Macs are not supported, because NVIDIA publishes no Intel build, and setup stops there with that reason. When `openshell` is already on `PATH`, the script changes nothing. The setup wizard runs it as the `openshell-install` step after the container step, because OpenShell's gateway needs Docker.
 
 After installing, `setup --step openshell-install` checks three things. The gateway must answer `openshell status`. Its supervisor image, `ghcr.io/nvidia/openshell/supervisor:<gateway version>`, must be in Docker, and the step pulls it when it is missing. The gateway must also accept a sandbox with a host bind mount. The verify step checks the gateway and the supervisor image again on every run. The gateway resolves that image only when it starts, so after an `image prune -a` every sandbox create fails until `docker pull` restores it. If your gateway config overrides `supervisor_image`, set `OPENSHELL_SUPERVISOR_IMAGE` in `.env` to the same reference.
 
@@ -59,7 +59,7 @@ import './openshell.js';
 
 The sign-in step (`scripts/auth.ts`) stores the Claude credential in OpenShell as the provider `nanoclaw-<install slug>-claude`, using one of two provider profiles NanoClaw imports for it: `nanoclaw-claude-oauth` (a Claude subscription token, sent as `Authorization: Bearer`) or `nanoclaw-claude-api-key` (sent as `x-api-key`). The value reaches `openshell` only through the child process environment. NanoClaw keeps no copy. Re-running the step with a new credential updates the provider in place, and running sandboxes pick it up.
 
-Inside a sandbox, `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY` holds an `openshell:resolve:env:…` placeholder; OpenShell swaps in the real value on requests to `api.anthropic.com` from Claude Code, node or bun. Only the Claude agent provider is supported. Without the provider, sessions are refused and the chat is told why.
+Inside a sandbox, `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY` holds an `openshell:resolve:env:…` placeholder; OpenShell swaps in the real value on requests to `api.anthropic.com` from Claude Code, node or bun. Only the Claude agent provider is supported. Without the provider, sessions are refused and the host log says why.
 
 OpenShell refuses to forward a model request whose body contains a placeholder (`403 … body credential rewriting is disabled`), so an agent that prints a credential variable cannot reach the model again in that conversation; `/clear` starts a fresh one. The agent guidance tells agents never to print credential variables.
 
@@ -85,9 +85,9 @@ To change a running sandbox as well, use the `openshell` CLI. Every sandbox carr
 
 OpenShell allows and denies network requests itself, not through NanoClaw's approval cards. When an agent tries a host it may not reach, OpenShell records the request: `openshell rule get <sandbox> --status pending` lists them, `openshell rule approve <sandbox> --chunk-id <id>` allows one for that sandbox, and `openshell rule reject <sandbox> --chunk-id <id> --reason …` denies it. An approval lasts until the sandbox is recreated; to keep it, add the rule to the group in the policy file. Proposals cover network rules only. Filesystem and process policy is fixed when a sandbox starts.
 
-## Setup console
+## Web console
 
-`scripts/ui/` is a small operator web page for this install. A status bar shows the OpenShell gateway, the Claude credential (install-wide, replaceable from there) and the group's running sandboxes. Per agent group it attaches OpenShell providers, creates and deletes service types (OpenShell provider profiles, from a short form or pasted YAML), manages network rules, allows a blocked request for the running sandbox or always (saved in the policy file), or denies it, and shows the group's activity. It edits the policy file and runs the `openshell` CLI; nothing else. Install it as a service with `pnpm exec tsx setup/index.ts --step openshell-ui -- --enable`, which prints the URL. It runs as a launchd agent on macOS and a systemd unit on Linux. The page has no login of its own. Expose it only through a password-gated reverse proxy and keep its port firewalled. See `scripts/ui/README.md`.
+`/add-openshell-console` adds an optional local web page for everything above: per-group providers and network rules, blocked requests, service types and the Claude credential.
 
 ## Validate
 

@@ -67,8 +67,8 @@ vi.mock('../src/community-portal/slack-job.js', () => ({
 vi.mock('./logs.js', () => ({ reset: vi.fn(), userInput: vi.fn(), complete: vi.fn() }));
 vi.mock('./lib/diagnostics.js', () => ({ emit: vi.fn() }));
 vi.mock('./lib/claude-handoff.js', () => ({ offerClaudeOnFailure: vi.fn(async () => false) }));
-vi.mock('./openshell-install.js', async (original) => ({
-  ...(await original<typeof import('./openshell-install.js')>()),
+vi.mock('./openshell/install-step.js', async (original) => ({
+  ...(await original<typeof import('./openshell/install-step.js')>()),
   hostSupport: () => fixture.support,
 }));
 function stub(step: string, args: string[]) {
@@ -368,62 +368,28 @@ describe('OpenShell sandboxing through the real wizard', () => {
   });
 });
 
-describe('the OpenShell setup UI at the end of setup', () => {
+describe('the end of setup on an OpenShell copy', () => {
   function openShellToEnd(): void {
     vi.stubEnv('NANOCLAW_OPENSHELL', 'true');
     vi.stubEnv('NANOCLAW_SKIP', SKIP_TO_END);
   }
 
-  it('starts after verify without asking, and prints only its URL', async () => {
+  it('starts no console; it points to the opt-in /add-openshell-console skill', async () => {
     openShellToEnd();
-    fixture.stepResult['openshell-ui'] = { ok: true, fields: { STATUS: 'success', URL: 'http://bob-lab:8790/' } };
     await runWizard();
-    expect(fixture.sequence).toEqual(['openshell', 'openshell-install', 'verify', 'openshell-ui']);
-    expect(fixture.args['openshell-ui']).toEqual(['--enable']);
-    expect(fixture.info).toEqual(['OpenShell setup UI: http://bob-lab:8790/']);
-    // ...and setup finishes normally after it.
+    expect(fixture.sequence).toEqual(['openshell', 'openshell-install', 'verify']);
+    expect(fixture.info).toEqual([expect.stringMatching(/\/add-openshell-console/)]);
     expect(fixture.outro).toHaveLength(1);
     expect(fixture.fail).not.toHaveBeenCalled();
   });
 
-  it('passes NANOCLAW_OPENSHELL_UI_PORT through as --port', async () => {
-    openShellToEnd();
-    vi.stubEnv('NANOCLAW_OPENSHELL_UI_PORT', '9001');
-    await runWizard();
-    expect(fixture.args['openshell-ui']).toEqual(['--enable', '--port', '9001']);
-  });
-
-  it('a UI that fails to start is a warning with the recovery command; setup still finishes', async () => {
-    openShellToEnd();
-    fixture.stepResult['openshell-ui'] = { ok: false, fields: { STATUS: 'failed' } };
-    await runWizard();
-    expect(fixture.warn.join('\n')).toMatch(
-      /setup UI didn't start.*pnpm exec tsx setup\/index\.ts --step openshell-ui -- --enable/s,
-    );
-    expect(fixture.fail).not.toHaveBeenCalled();
-    expect(fixture.outro).toHaveLength(1);
-  });
-
-  it('starts even when verify finds problems (it can replace the Claude credential), before "What\'s left"', async () => {
-    openShellToEnd();
-    fixture.stepResult.verify = {
-      ok: false,
-      fields: { STATUS: 'failed', CREDENTIALS: 'missing', CREDENTIAL_SOURCE: 'drop-in:none', CONFIGURED_CHANNELS: 'x' },
-    };
-    fixture.stepResult['openshell-ui'] = { ok: true, fields: { STATUS: 'success', URL: 'http://bob-lab:8790/' } };
-    await runWizard();
-    expect(fixture.sequence).toEqual(['openshell', 'openshell-install', 'verify', 'openshell-ui']);
-    expect(fixture.info).toEqual(['OpenShell setup UI: http://bob-lab:8790/']);
-    expect(fixture.notes.join('\n')).toMatch(/no Claude credential/);
-  });
-
-  it('verify’s OpenShell findings land in "What\'s left"', async () => {
+  it('verify’s OpenShell findings land in "What\'s left": a missing credential, a missing supervisor image', async () => {
     openShellToEnd();
     fixture.stepResult.verify = {
       ok: false,
       fields: {
         STATUS: 'failed',
-        CREDENTIALS: 'configured',
+        CREDENTIALS: 'missing',
         CONFIGURED_CHANNELS: 'x',
         OPENSHELL_GATEWAY: 'connected',
         OPENSHELL_SUPERVISOR_IMAGE: 'missing',
@@ -431,19 +397,12 @@ describe('the OpenShell setup UI at the end of setup', () => {
       },
     };
     await runWizard();
-    expect(fixture.notes.join('\n')).toMatch(
-      /supervisor image is missing.*docker pull ghcr\.io\/nvidia\/openshell\/supervisor:0\.1\.2/s,
-    );
+    const notes = fixture.notes.join('\n');
+    expect(notes).toMatch(/OpenShell has no Claude credential.*--step gateway-auth/s);
+    expect(notes).toMatch(/supervisor image is missing.*docker pull ghcr\.io\/nvidia\/openshell\/supervisor:0\.1\.2/s);
   });
 
-  it('respects NANOCLAW_SKIP=openshell-ui', async () => {
-    openShellToEnd();
-    vi.stubEnv('NANOCLAW_SKIP', `openshell-ui,${SKIP_TO_END}`);
-    await runWizard();
-    expect(fixture.sequence).toEqual(['openshell', 'openshell-install', 'verify']);
-  });
-
-  it('never runs on a copy without OpenShell', async () => {
+  it('a copy without OpenShell sees neither', async () => {
     vi.stubEnv('NANOCLAW_SKIP', SKIP_TO_END);
     await runWizard();
     expect(fixture.sequence).toEqual(['verify']);

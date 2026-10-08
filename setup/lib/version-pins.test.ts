@@ -7,7 +7,7 @@ describe('readVersionPin', () => {
     expect(readVersionPin('agent-image')).toContain('@sha256:');
   });
 
-  it('pins the OpenShell release (a vX.Y.Z tag, read by setup/install-openshell.sh)', () => {
+  it('pins the OpenShell release (a vX.Y.Z tag, read by setup/openshell/install.sh)', () => {
     expect(readVersionPin('openshell')).toMatch(/^v\d+\.\d+\.\d+$/);
   });
 

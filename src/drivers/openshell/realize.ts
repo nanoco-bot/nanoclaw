@@ -19,6 +19,7 @@ import {
   type SessionSpec,
   type SessionStatus,
 } from '../types.js';
+import { sandboxImage } from './image.js';
 import { OpenShellCliError } from './cli.js';
 import type { DriverConfig } from './policy.js';
 
@@ -92,7 +93,7 @@ export function createArgs({
   driverConfig,
   providers = [],
 }: CreateArgsInput): string[] {
-  const args = ['sandbox', 'create', '--name', name, '--from', container.image, '--policy', policyPath];
+  const args = ['sandbox', 'create', '--name', name, '--from', sandboxImage(container.image), '--policy', policyPath];
   if (driverConfig) args.push('--driver-config-json', JSON.stringify(driverConfig));
   for (const [k, v] of Object.entries(sandboxLabels(spec, container))) args.push('--label', `${k}=${v}`);
   // env first, then the contributed lane: on a key collision the contributed

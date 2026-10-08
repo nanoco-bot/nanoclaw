@@ -5,13 +5,13 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const installGateway = vi.hoisted(() => vi.fn(async (kind: string) => ({ kind, label: kind })));
-vi.mock('./gateways/install.js', () => ({ installGateway }));
-vi.mock('../src/log.js', () => ({ log: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() } }));
+vi.mock('../gateways/install.js', () => ({ installGateway }));
+vi.mock('../../src/log.js', () => ({ log: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() } }));
 // No Docker here: a fake runner that reports "no base image" unless a test says otherwise.
 const docker = vi.hoisted(() => ({ hasBase: false, builds: [] as string[] }));
-vi.mock('./lib/openshell-image.js', async (original) => {
-  const real = await original<typeof import('./lib/openshell-image.js')>();
-  const fake: import('./lib/openshell-image.js').DockerRunner = (args, input) => {
+vi.mock('./image.js', async (original) => {
+  const real = await original<typeof import('./image.js')>();
+  const fake: import('./image.js').DockerRunner = (args, input) => {
     if (args[0] === 'image' && args.includes('{{.Id}}'))
       return { status: docker.hasBase ? 0 : 1, stdout: 'sha256:base', stderr: '' };
     if (args[0] === 'build') {
@@ -22,14 +22,14 @@ vi.mock('./lib/openshell-image.js', async (original) => {
   };
   return { ...real, realDocker: fake };
 });
-// OpenShell itself (install + runtime checks) is setup/openshell-install.ts's, tested there.
+// OpenShell itself (install + runtime checks) is setup/openshell/install-step.ts's, tested there.
 const install = vi.hoisted(() => ({
   support: { ok: true } as { ok: true } | { ok: false; reason: string },
   outcome: undefined as unknown,
   calls: 0,
 }));
-vi.mock('./openshell-install.js', async (original) => {
-  const real = await original<typeof import('./openshell-install.js')>();
+vi.mock('./install-step.js', async (original) => {
+  const real = await original<typeof import('./install-step.js')>();
   return {
     ...real,
     hostSupport: () => install.support,
@@ -56,7 +56,7 @@ vi.mock('./openshell-install.js', async (original) => {
     },
   };
 });
-import { OPENSHELL_POLICY_DEFAULTS, parseOpenShellArgs, planOpenShellEnv, run } from './openshell.js';
+import { OPENSHELL_POLICY_DEFAULTS, parseOpenShellArgs, planOpenShellEnv, run } from './step.js';
 
 let root: string;
 let previous: string;

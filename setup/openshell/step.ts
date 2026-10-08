@@ -9,7 +9,7 @@
  * default when NANOCLAW_RUNTIME_DRIVER is unset). Enabling first refuses a
  * machine OpenShell is not published for (an Intel Mac), then installs
  * OpenShell itself — CLI, its local gateway, its supervisor image — through
- * setup/openshell-install.ts, unless `--no-install` (the setup wizard runs that
+ * setup/openshell/install-step.ts, unless `--no-install` (the setup wizard runs that
  * step on its own, after Docker is in place). A failed install writes nothing.
  * Then it writes, in one atomic `.env` update:
  *   - NANOCLAW_RUNTIME_DRIVER=openshell          (read by src/drivers/index.ts)
@@ -32,20 +32,14 @@ import path from 'node:path';
 
 import * as p from '@clack/prompts';
 
-import { readEnvFile } from '../src/env.js';
-import { log } from '../src/log.js';
-import { installGateway } from './gateways/install.js';
-import {
-  hostSupport,
-  installOpenShell,
-  installStatusFields,
-  oneLine,
-  unsupportedHostHint,
-} from './openshell-install.js';
-import { buildOpenShellImage, type DockerRunner, realDocker } from './lib/openshell-image.js';
-import { resolveBinary } from './lib/resolve-binary.js';
-import { removeEnvVar, upsertEnvVars } from './set-env.js';
-import { emitStatus } from './status.js';
+import { readEnvFile } from '../../src/env.js';
+import { log } from '../../src/log.js';
+import { installGateway } from '../gateways/install.js';
+import { hostSupport, installOpenShell, installStatusFields, oneLine, unsupportedHostHint } from './install-step.js';
+import { buildOpenShellImage, type DockerRunner, realDocker } from './image.js';
+import { resolveBinary } from './resolve-binary.js';
+import { removeEnvVar, upsertEnvVars } from '../set-env.js';
+import { emitStatus } from '../status.js';
 
 export const OPENSHELL_DRIVER = 'openshell';
 export const OPENSHELL_GATEWAY_KIND = 'openshell';

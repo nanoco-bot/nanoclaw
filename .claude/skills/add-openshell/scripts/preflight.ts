@@ -5,7 +5,7 @@
  * Errors block installation; warnings are reported and installation goes on
  * (they describe the host, which may legitimately be prepared afterwards).
  */
-import { resolveBinary } from '../../../../setup/lib/resolve-binary.js';
+import { resolveBinary } from '../../../../setup/openshell/resolve-binary.js';
 
 export interface PreflightResult {
   errors: string[];

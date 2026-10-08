@@ -8,4 +8,4 @@ The agents' Claude credential is an OpenShell provider named `nanoclaw-<install 
 
 Running OpenShell sandboxes belong to the OpenShell gateway, not to this copy's Docker daemon. List them with `openshell sandbox list` and delete only those labelled with this install's `nanoclaw-install` slug. Do not change the OpenShell gateway itself or other users' sandboxes.
 
-If the setup UI was installed, remove its service with `pnpm exec tsx setup/index.ts --step openshell-ui -- --disable`. Its decision log is `data/openshell-setup-ui/decisions.jsonl`; delete it if you no longer need the history.
+If the web console was added, remove it first (`/add-openshell-console`'s REMOVE.md).

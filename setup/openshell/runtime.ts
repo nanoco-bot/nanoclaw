@@ -1,6 +1,6 @@
 /**
  * OpenShell runtime checks, shared by the install step
- * (setup/openshell-install.ts) and verify (setup/verify.ts). Every process call
+ * (setup/openshell/install-step.ts) and verify (setup/verify.ts). Every process call
  * goes through an injectable `Run`, so all of this is tested without OpenShell
  * or Docker.
  *
@@ -494,7 +494,7 @@ export async function ensureOpenShellRuntime(opts: EnsureOptions): Promise<Ensur
       ok: false,
       error: 'cli_missing',
       message: `The openshell CLI could not be run (${opts.bin}).`,
-      hint: `${status.detail}. Install OpenShell (setup/install-openshell.sh) or set OPENSHELL_BIN to its absolute path.`,
+      hint: `${status.detail}. Install OpenShell (setup/openshell/install.sh) or set OPENSHELL_BIN to its absolute path.`,
     };
   }
   if (status.state === 'not_configured') {

@@ -9,7 +9,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { RuntimeReport } from './lib/openshell-runtime.js';
+import type { RuntimeReport } from './runtime.js';
 
 const host = vi.hoisted(() => ({
   root: '',
@@ -26,38 +26,39 @@ vi.mock('child_process', async (importOriginal) => ({
     return '';
   }),
 }));
-vi.mock('../src/install-slug.js', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../src/install-slug.js')>()),
+vi.mock('../../src/install-slug.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/install-slug.js')>()),
   getLaunchdLabel: () => 'dev.nanoclaw',
   getSystemdUnit: () => 'nanoclaw.service',
 }));
-vi.mock('../src/env.js', () => ({
+vi.mock('../../src/env.js', () => ({
   readEnvFile: (keys: string[]) => Object.fromEntries(keys.filter((k) => k in host.env).map((k) => [k, host.env[k]])),
 }));
-vi.mock('./platform.js', () => ({
+vi.mock('../platform.js', () => ({
   getPlatform: () => 'linux',
   getServiceManager: () => 'systemd',
   isRoot: () => false,
   hasSystemd: () => true,
 }));
-vi.mock('./central-db-inspection.js', () => ({
+vi.mock('../central-db-inspection.js', () => ({
   inspectCentralDb: async () => ({ registeredGroups: 1, derivedGroups: 0 }),
 }));
-vi.mock('./lib/registry-state.js', () => ({
+vi.mock('../lib/registry-state.js', () => ({
   readImageSource: () => 'local',
   inspectAgentImage: () => ({ source: 'local', registryDigest: null }),
 }));
-vi.mock('./lib/openshell-runtime.js', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('./lib/openshell-runtime.js')>()),
+vi.mock('./runtime.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./runtime.js')>()),
   inspectOpenShellRuntime: (opts: unknown) => {
     host.inspect(opts);
     return host.report;
   },
 }));
-vi.mock('./status.js', () => ({ emitStatus: vi.fn() }));
+vi.mock('../status.js', () => ({ emitStatus: vi.fn() }));
 
-import { emitStatus } from './status.js';
-import { checkOpenShellRuntime, determineVerifyStatus, run } from './verify.js';
+import { emitStatus } from '../status.js';
+import { determineVerifyStatus, run } from '../verify.js';
+import { checkOpenShellRuntime } from './verify.js';
 
 const PRESENT: RuntimeReport = {
   gateway: 'connected',

@@ -12,7 +12,7 @@ import path from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { readPolicyFile } from '../../../../../src/drivers/openshell/policy-file.js';
+import { readPolicyFile } from '../../../../src/drivers/openshell/policy-file.js';
 import { STATIC_DIR } from './exec.js';
 import type { ExecResult } from './openshell-ops.js';
 import { createHandler, type UiDeps } from './routes.js';
@@ -127,6 +127,51 @@ describe('page', () => {
   it('POST bodies must be JSON', async () => {
     const res = await fetch(`${base}/api/groups/network`, { method: 'POST', body: 'group=ag-1' });
     expect(res.status).toBe(415);
+  });
+});
+
+describe('host and origin checks (DNS rebinding, cross-site requests)', () => {
+  /** A raw request, so Host and Origin can be anything (fetch would override Host). */
+  function raw(method: string, pathName: string, headers: Record<string, string>, body?: string) {
+    return new Promise<number>((resolve, reject) => {
+      const url = new URL(base);
+      const req = http.request({ host: url.hostname, port: url.port, path: pathName, method, headers }, (res) => {
+        res.resume();
+        resolve(res.statusCode ?? 0);
+      });
+      req.on('error', reject);
+      req.end(body);
+    });
+  }
+
+  it('answers only to a local host name, unless the host is allowed', async () => {
+    expect(await raw('GET', '/api/groups', { host: `127.0.0.1:${new URL(base).port}` })).toBe(200);
+    expect(await raw('GET', '/api/groups', { host: 'localhost' })).toBe(200);
+    expect(await raw('GET', '/api/groups', { host: 'evil.example' })).toBe(403);
+    expect(await raw('GET', '/', { host: 'evil.example' })).toBe(403);
+  });
+
+  it('refuses a write whose Origin is another site', async () => {
+    const host = `127.0.0.1:${new URL(base).port}`;
+    const json = { 'content-type': 'application/json' };
+    const body = JSON.stringify({ group: 'ag-1', name: 'x', host: 'a.io', ports: '443', binaries: ['/usr/bin/curl'] });
+    expect(await raw('POST', '/api/groups/network', { host, origin: 'https://evil.example', ...json }, body)).toBe(403);
+    expect(await raw('POST', '/api/groups/network', { host, origin: `http://${host}`, ...json }, body)).toBe(200);
+  });
+
+  it('a proxy host listed in allowedHosts is accepted', async () => {
+    const proxied = http.createServer(createHandler({ ...deps, allowedHosts: ['bob-lab.exe.xyz'] }));
+    await new Promise<void>((r) => proxied.listen(0, '127.0.0.1', () => r()));
+    const port = (proxied.address() as AddressInfo).port;
+    const status = await new Promise<number>((resolve) =>
+      http.get({ host: '127.0.0.1', port, path: '/api/groups', headers: { host: 'bob-lab.exe.xyz' } }, (res) => {
+        res.resume();
+        resolve(res.statusCode ?? 0);
+      }),
+    );
+    proxied.closeAllConnections();
+    await new Promise((r) => proxied.close(r));
+    expect(status).toBe(200);
   });
 });
 

@@ -6,10 +6,10 @@
  *
  *   1. Refuses a host OpenShell is not published for (an Intel Mac) before
  *      touching anything.
- *   2. Runs setup/install-openshell.sh: NVIDIA's installer at the versions.json
+ *   2. Runs setup/openshell/install.sh: NVIDIA's installer at the versions.json
  *      pin, which installs the CLI and starts OpenShell's local gateway — or
  *      does nothing when `openshell` is already on PATH.
- *   3. ensureOpenShellRuntime (setup/lib/openshell-runtime.ts): the gateway
+ *   3. ensureOpenShellRuntime (setup/openshell/runtime.ts): the gateway
  *      answers, its supervisor image is in Docker (pulled if not), and it
  *      accepts NanoClaw's sandbox mounts.
  *   4. Records OPENSHELL_BIN in `.env` as an absolute path when it is unset or
@@ -27,13 +27,14 @@
  * `setup --step openshell -- --enable` runs the same install first unless
  * given `--no-install`.
  */
-import { spawn } from 'child_process';
+import { execSync, spawn } from 'child_process';
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 
-import { readEnvFile } from '../src/env.js';
-import { log } from '../src/log.js';
-import { StatusStream } from './lib/runner.js';
+import { readEnvFile } from '../../src/env.js';
+import { log } from '../../src/log.js';
+import { StatusStream } from '../lib/runner.js';
 import {
   ensureOpenShellRuntime,
   openShellHostSupport,
@@ -41,13 +42,13 @@ import {
   type EnsureOptions,
   type EnsureResult,
   type HostSupport,
-} from './lib/openshell-runtime.js';
-import { resolveBinary } from './lib/resolve-binary.js';
-import { getArch, getPlatform, isAppleSilicon } from './platform.js';
-import { upsertEnvVar } from './set-env.js';
-import { emitStatus } from './status.js';
+} from './runtime.js';
+import { resolveBinary } from './resolve-binary.js';
+import { getPlatform } from '../platform.js';
+import { upsertEnvVar } from '../set-env.js';
+import { emitStatus } from '../status.js';
 
-export const INSTALL_SCRIPT = path.join('setup', 'install-openshell.sh');
+export const INSTALL_SCRIPT = path.join('setup', 'openshell', 'install.sh');
 
 /** The `.env` keys this step reads; process.env wins, as in src/drivers/openshell/config.ts. */
 const KEYS = ['OPENSHELL_BIN', 'OPENSHELL_GATEWAY', 'OPENSHELL_GATEWAY_ENDPOINT', SUPERVISOR_IMAGE_KEY];
@@ -92,6 +93,23 @@ export interface InstallDeps {
   ensure?: (opts: EnsureOptions) => Promise<EnsureResult>;
   isExecutable?: (bin: string) => boolean;
   say?: (line: string) => void;
+}
+
+/** os.arch() of this Node process: `x64` under Rosetta. */
+function getArch(): string {
+  return os.arch();
+}
+
+/** Apple silicon hardware, even when this Node runs under Rosetta. */
+function isAppleSilicon(): boolean {
+  if (os.platform() !== 'darwin') return false;
+  try {
+    return (
+      execSync('sysctl -n hw.optional.arm64', { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] }).trim() === '1'
+    );
+  } catch {
+    return false;
+  }
 }
 
 /** This machine, as openShellHostSupport needs it. */
