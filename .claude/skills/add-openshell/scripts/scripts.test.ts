@@ -145,3 +145,12 @@ describe('the Claude credential as an OpenShell provider', () => {
     expect(await storedModelCredentialKind(root, withKey.cli)).toBe('api-key');
   });
 });
+
+describe('agent guidance', () => {
+  it('never contains the literal placeholder prefix (OpenShell refuses model requests that carry it)', () => {
+    const dir = path.join(path.dirname(new URL(import.meta.url).pathname), '..', 'payload', 'container', 'skills');
+    const files = fs.readdirSync(dir, { recursive: true }).map(String).filter((f) => f.endsWith('.md'));
+    expect(files.length).toBeGreaterThan(0);
+    for (const f of files) expect(fs.readFileSync(path.join(dir, f), 'utf8')).not.toMatch(/openshell:resolve/i);
+  });
+});

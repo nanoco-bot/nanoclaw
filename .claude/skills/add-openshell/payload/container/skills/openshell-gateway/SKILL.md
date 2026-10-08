@@ -17,8 +17,7 @@ around it.
 ## Model access
 
 Your Claude credential variable (`CLAUDE_CODE_OAUTH_TOKEN` or
-`ANTHROPIC_API_KEY`) holds an `openshell:resolve:env:…` placeholder, not a
-secret: OpenShell replaces it with the real value on requests to the model
+`ANTHROPIC_API_KEY`) holds an OpenShell placeholder, not a secret: OpenShell replaces it with the real value on requests to the model
 API. Do not change it, and never ask the user for an API key. Other services'
 keys reach you the same way, as placeholders in their usual variables, once an
 operator attaches them.
