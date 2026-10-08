@@ -1,19 +1,13 @@
 /**
- * Agent-provider authentication for the OpenShell gateway.
+ * Agent-provider sign-in for the OpenShell gateway.
  *
- * The gateway has no vault: its model relay reads ANTHROPIC_API_KEY or
- * CLAUDE_CODE_OAUTH_TOKEN from the NanoClaw host SERVICE environment at
- * request time. This step collects the Claude credential the same ways the
- * other gateway skills do — supplied non-interactively
+ * Collects the Claude credential — supplied in the environment
  * (NANOCLAW_CLAUDE_CODE_OAUTH_TOKEN / CLAUDE_CODE_OAUTH_TOKEN /
- * NANOCLAW_ANTHROPIC_API_KEY / ANTHROPIC_API_KEY), a legacy value found in
- * `.env` (moved out of it), a Claude subscription sign-in, or a pasted token
- * or key — and writes it where this install's service reads its environment:
- * on Linux the 0600 systemd drop-in (`<unit>.service.d/credential.conf`), on
- * macOS the owner-only LaunchAgent plist's EnvironmentVariables. Never to
- * `.env`, never to an agent. Hosts with neither systemd nor launchd are refused.
+ * NANOCLAW_ANTHROPIC_API_KEY / ANTHROPIC_API_KEY), a Claude subscription
+ * sign-in, or a pasted token or key — and stores it in OpenShell as this
+ * install's Claude provider (credential-store.ts). NanoClaw keeps no copy.
  */
-import { execFileSync, spawnSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -21,53 +15,25 @@ import { fileURLToPath } from 'node:url';
 
 import * as p from '@clack/prompts';
 
-import {
-  CREDENTIAL_ENV,
-  assertServiceReady,
-  credentialLocation,
-  credentialMatchesLive,
-  inspectServiceCredential,
-  isLaunchd,
-  suppliedCredential,
-  writeCredentialDropIn,
-  writeLaunchdCredential,
-  type ModelCredential,
-  type UnitLocation,
-} from '../../../../setup/lib/openshell-credential.js';
+import { storeModelCredential, storedModelCredentialKind, type ModelCredential } from './credential-store.js';
 
 type Method = 'subscription' | 'oauth' | 'api' | 'skip';
+
+const OAUTH_PREFIX = 'sk-ant-oat';
+const API_KEY_PREFIX = 'sk-ant-api';
 
 function answer<T>(value: T | symbol): T {
   if (p.isCancel(value)) throw new Error('Authentication cancelled');
   return value as T;
 }
 
-/** A credential an older setup left in `.env`: used once, then removed from the file. */
-export function takeLegacyEnvCredential(root = process.cwd()): ModelCredential | undefined {
-  const file = path.join(root, '.env');
-  if (!fs.existsSync(file)) return undefined;
-  const current = fs.readFileSync(file, 'utf8');
-  const keys = ['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY'];
-  const found = keys.flatMap((key) => {
-    const value = current
-      .match(new RegExp(`^${key}=(.+)$`, 'm'))?.[1]
-      ?.trim()
-      .replace(/^(['"])(.*)\1$/, '$2');
-    return value ? [{ key, value }] : [];
-  });
-  if (found.length === 0) return undefined;
-  if (found.length > 1)
-    throw new Error('Both CLAUDE_CODE_OAUTH_TOKEN and ANTHROPIC_API_KEY are in .env; keep one and retry');
-  const { key, value } = found[0];
-  fs.writeFileSync(
-    file,
-    current
-      .split('\n')
-      .filter((line) => !line.startsWith(`${key}=`))
-      .join('\n'),
-    { mode: 0o600 },
-  );
-  return { kind: key === 'ANTHROPIC_API_KEY' && !value.startsWith('sk-ant-oat') ? 'api-key' : 'oauth', value };
+/** A credential supplied in the environment (non-interactive setup), if any. */
+export function suppliedCredential(env: NodeJS.ProcessEnv = process.env): ModelCredential | undefined {
+  const token = (env.NANOCLAW_CLAUDE_CODE_OAUTH_TOKEN || env.CLAUDE_CODE_OAUTH_TOKEN)?.trim();
+  if (token) return { kind: 'oauth', value: token };
+  const key = (env.NANOCLAW_ANTHROPIC_API_KEY || env.ANTHROPIC_API_KEY)?.trim();
+  if (!key) return undefined;
+  return { kind: key.startsWith(OAUTH_PREFIX) ? 'oauth' : 'api-key', value: key };
 }
 
 function capturedSubscriptionToken(): string {
@@ -78,7 +44,7 @@ function capturedSubscriptionToken(): string {
     const result = spawnSync('bash', [script, output], { stdio: 'inherit' });
     if (result.status !== 0 || !fs.existsSync(output)) throw new Error('Claude subscription sign-in failed');
     const token = fs.readFileSync(output, 'utf8').trim();
-    if (!token.startsWith('sk-ant-oat')) throw new Error('Claude subscription sign-in returned an invalid token');
+    if (!token.startsWith(OAUTH_PREFIX)) throw new Error('Claude subscription sign-in returned an invalid token');
     return token;
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
@@ -88,7 +54,7 @@ function capturedSubscriptionToken(): string {
 async function promptCredential(): Promise<ModelCredential | undefined> {
   const method = answer<Method>(
     await p.select({
-      message: 'How should the OpenShell gateway connect to Claude?',
+      message: 'How should your agents connect to Claude?',
       options: [
         { value: 'subscription', label: 'Claude subscription', hint: 'recommended for Pro or Max' },
         { value: 'oauth', label: 'Paste an OAuth token' },
@@ -99,7 +65,7 @@ async function promptCredential(): Promise<ModelCredential | undefined> {
   );
   if (method === 'skip') return undefined;
   if (method === 'subscription') return { kind: 'oauth', value: capturedSubscriptionToken() };
-  const prefix = method === 'oauth' ? 'sk-ant-oat' : 'sk-ant-api';
+  const prefix = method === 'oauth' ? OAUTH_PREFIX : API_KEY_PREFIX;
   const token = answer<string>(
     await p.password({
       message: method === 'oauth' ? 'Paste your OAuth token' : 'Paste your API key',
@@ -115,50 +81,19 @@ async function promptCredential(): Promise<ModelCredential | undefined> {
   return { kind: method === 'oauth' ? 'oauth' : 'api-key', value: token };
 }
 
-/** Make systemd see the new drop-in; restart a running service so its relay does too. */
-function applyToService(loc: UnitLocation): string {
-  const [cmd, ...prefix] = loc.systemctl;
-  try {
-    execFileSync(cmd, [...prefix, 'daemon-reload'], { stdio: 'ignore' });
-  } catch {
-    return 'systemd was not reachable; the service picks the credential up when it is installed.';
-  }
-  try {
-    execFileSync(cmd, [...prefix, 'try-restart', loc.unit], { stdio: 'ignore' });
-    return 'If the service was running it has been restarted with the credential.';
-  } catch {
-    return `Restart it to apply: ${loc.systemctl.join(' ')} restart ${loc.unit}`;
-  }
-}
-
 export async function run(agentProvider = process.argv[2] || 'claude', root = process.cwd()): Promise<void> {
   if (agentProvider !== 'claude') {
-    throw new Error(
-      `The OpenShell gateway relays Anthropic model credentials only; provider '${agentProvider}' is not supported with it.`,
-    );
+    throw new Error(`The OpenShell gateway supports the Claude agent provider only, not '${agentProvider}'.`);
   }
-  // Linux+systemd or macOS; anything else (WSL / nohup) throws a clear refusal.
-  const loc = credentialLocation(root);
-  assertServiceReady(loc);
-  const fresh = suppliedCredential() ?? takeLegacyEnvCredential(root);
-  if (!fresh) {
-    const existing = inspectServiceCredential(loc);
-    if (existing.kind !== 'none') {
-      p.log.success(
-        `Claude credential already configured for the OpenShell relay (${existing.kind}, ${existing.source}).`,
-      );
+  const supplied = suppliedCredential();
+  if (!supplied) {
+    const existing = await storedModelCredentialKind(root);
+    if (existing) {
+      p.log.success(`Claude credential already stored in OpenShell (${existing}).`);
       return;
     }
-  } else if (credentialMatchesLive(fresh, loc)) {
-    // Re-run to rotate with the key the relay already has: nothing to write,
-    // and no reason to restart a running service (and drop its sessions).
-    const existing = inspectServiceCredential(loc);
-    p.log.success(
-      `Claude credential unchanged for the OpenShell relay (${existing.kind}, ${existing.source}) — nothing to restart.`,
-    );
-    return;
   }
-  const cred = fresh ?? (process.stdin.isTTY ? await promptCredential() : undefined);
+  const cred = supplied ?? (process.stdin.isTTY ? await promptCredential() : undefined);
   if (!cred) {
     throw new Error(
       'No Claude credential for the OpenShell gateway. Supply one with CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY ' +
@@ -166,17 +101,11 @@ export async function run(agentProvider = process.argv[2] || 'claude', root = pr
         'Agents cannot reach the model until it is set.',
     );
   }
-  if (isLaunchd(loc)) {
-    writeLaunchdCredential(loc, cred); // includes the service's unload → load → kickstart
-    p.log.success(
-      `Claude credential (${CREDENTIAL_ENV[cred.kind]}) stored for the OpenShell relay in ${loc.plistPath} (owner-only); the service was reloaded with it.`,
-    );
-    return;
-  }
-  writeCredentialDropIn(loc, cred);
-  const note = applyToService(loc);
+  const outcome = await storeModelCredential(cred, root);
   p.log.success(
-    `Claude credential (${CREDENTIAL_ENV[cred.kind]}) stored for the OpenShell relay in ${loc.dropInPath} (0600). ${note}`,
+    outcome === 'replaced'
+      ? `Claude credential stored in OpenShell (${cred.kind}, replacing the previous kind); new sandboxes use it.`
+      : `Claude credential ${outcome === 'updated' ? 'updated' : 'stored'} in OpenShell (${cred.kind}).`,
   );
 }
 

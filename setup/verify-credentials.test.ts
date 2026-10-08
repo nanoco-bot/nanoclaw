@@ -20,30 +20,30 @@ function install(env: string): string {
 }
 
 describe('verify: credentials for the OpenShell gateway', () => {
-  it('a gateway name in .env is NOT a credential: missing when the service environment has none', () => {
+  it('a gateway name in .env is NOT a credential: missing until OpenShell holds the provider', () => {
     const root = install('NANOCLAW_GATEWAY_PROVIDER=openshell\n');
-    expect(checkCredentials(root, () => ({ kind: 'none', source: 'running-service' }))).toEqual({
+    expect(checkCredentials(root, () => null)).toEqual({
       credentials: 'missing',
-      credentialSource: 'running-service:none',
+      credentialSource: 'openshell-provider:none',
     });
   });
 
-  it('configured only when the place the relay reads has one', () => {
+  it('configured when OpenShell holds the provider', () => {
     const root = install('NANOCLAW_GATEWAY_PROVIDER=openshell\n');
-    expect(checkCredentials(root, () => ({ kind: 'oauth', source: 'unit-environment' }))).toEqual({
+    expect(checkCredentials(root, () => 'oauth')).toEqual({
       credentials: 'configured',
-      credentialSource: 'unit-environment:oauth',
+      credentialSource: 'openshell-provider:oauth',
     });
   });
 
-  it('a key left in .env does not count for OpenShell (the relay never reads .env)', () => {
+  it('a key left in .env does not count for OpenShell', () => {
     const root = install('NANOCLAW_GATEWAY_PROVIDER=openshell\nANTHROPIC_API_KEY=sk-ant-api03-x\n');
-    expect(checkCredentials(root, () => ({ kind: 'none', source: 'drop-in-file' })).credentials).toBe('missing');
+    expect(checkCredentials(root, () => null).credentials).toBe('missing');
   });
 
   it('other gateways keep the existing .env check', () => {
     const root = install('NANOCLAW_GATEWAY_PROVIDER=onecli\n');
-    const inspect = vi.fn();
+    const inspect = vi.fn(() => null);
     expect(checkCredentials(root, inspect)).toEqual({ credentials: 'configured', credentialSource: '' });
     expect(inspect).not.toHaveBeenCalled();
   });

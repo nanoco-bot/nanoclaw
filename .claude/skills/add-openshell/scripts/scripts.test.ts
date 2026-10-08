@@ -4,18 +4,15 @@ import path from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { createCredentialStore } from './credential-store.js';
+import { createCredentialStore, storeModelCredential, storedModelCredentialKind } from './credential-store.js';
+import type { OpenShellCli } from '../../../../src/drivers/openshell/cli.js';
+import { MODEL_PROFILE_ID, modelProviderName } from '../../../../src/drivers/openshell/model-provider.js';
+import { getInstallSlug } from '../../../../src/install-slug.js';
 import { detectInstalledOpenShell } from './detect.js';
-import { preflight, resolveBinary } from './preflight.js';
+import { resolveBinary } from '../../../../setup/lib/resolve-binary.js';
+import { preflight } from './preflight.js';
 
-const READY = {
-  NANOCLAW_RUNTIME_DRIVER: 'openshell',
-  OPENSHELL_BIN: '/opt/openshell/bin/openshell',
-  NANOCLAW_OPENSHELL_MODEL_RELAY_PORT: '23456',
-  NANOCLAW_OPENSHELL_GATEWAY_PORTS: '23456',
-  NANOCLAW_OPENSHELL_GATEWAY_BINARIES: '/usr/local/bin/bun,/usr/local/bin/node',
-  NANOCLAW_OPENSHELL_GATEWAY_HOST: 'host.openshell.internal',
-};
+const READY = { NANOCLAW_RUNTIME_DRIVER: 'openshell', OPENSHELL_BIN: '/opt/openshell/bin/openshell' };
 const found = () => '/opt/openshell/bin/openshell';
 
 const roots: string[] = [];
@@ -28,32 +25,9 @@ describe('openshell gateway preflight', () => {
     expect(preflight(READY, found)).toEqual({ errors: [], warnings: [] });
   });
 
-  it('refuses a docker-driver copy: the relay is only reachable from a sandbox', () => {
+  it('refuses a docker-driver copy: only the OpenShell driver attaches the credential', () => {
     const { errors } = preflight({ ...READY, NANOCLAW_RUNTIME_DRIVER: '' }, found);
     expect(errors.join('\n')).toMatch(/requires NANOCLAW_RUNTIME_DRIVER=openshell.*'docker'/);
-  });
-
-  it('requires an install-specific relay port (no fixed default)', () => {
-    const { NANOCLAW_OPENSHELL_MODEL_RELAY_PORT: _unset, ...noPort } = READY;
-    expect(preflight(noPort, found).errors.join()).toMatch(/NANOCLAW_OPENSHELL_MODEL_RELAY_PORT is not set/);
-  });
-
-  it('refuses an egress allow-list that drifted from the relay port', () => {
-    expect(preflight({ ...READY, NANOCLAW_OPENSHELL_GATEWAY_PORTS: '9999' }, found).errors.join()).toMatch(
-      /must be exactly the relay port 23456/,
-    );
-    expect(preflight({ ...READY, NANOCLAW_OPENSHELL_GATEWAY_PORTS: '23456,9999' }, found).errors.join()).toMatch(
-      /must be exactly/,
-    );
-    expect(preflight({ ...READY, NANOCLAW_OPENSHELL_GATEWAY_HOST: 'elsewhere' }, found).errors.join()).toMatch(
-      /does not match the relay alias/,
-    );
-  });
-
-  it('fails on a relay port held by another process; accepts this install’s own relay', () => {
-    expect(preflight(READY, found, 'taken').errors.join()).toMatch(/already in use by another process/);
-    expect(preflight(READY, found, 'ours').errors).toEqual([]);
-    expect(preflight(READY, found, 'free').errors).toEqual([]);
   });
 
   it('only warns about a missing or PATH-relative CLI', () => {
@@ -86,9 +60,97 @@ describe('openshell gateway detection and credential store', () => {
     expect(detectInstalledOpenShell(root)).toBe(true);
   });
 
-  it('refuses to store credentials', async () => {
+  it('holds only the Claude credential', async () => {
     const store = createCredentialStore();
-    await expect(store.save('codex', { kind: 'api-key', value: 'x' })).rejects.toThrow(/does not store credentials/);
+    await expect(store.save('codex', { kind: 'api-key', value: 'x' })).rejects.toThrow(
+      /holds only the Claude credential/,
+    );
     expect(await store.has('codex')).toBe(false);
+  });
+});
+
+describe('the Claude credential as an OpenShell provider', () => {
+  /** A recording `openshell` that knows some profiles and providers. */
+  function fakeCli(state: { profiles: string[]; providers: { name: string; type: string }[] }) {
+    const calls: { args: string[]; env?: Record<string, string> }[] = [];
+    const cli: OpenShellCli = {
+      bin: 'openshell',
+      async run(args, opts) {
+        calls.push({ args, env: opts?.env });
+        if (args.join(' ') === 'provider profile list -o json')
+          return JSON.stringify(state.profiles.map((id) => ({ id })));
+        if (args.join(' ') === 'provider list -o json') return JSON.stringify({ providers: state.providers });
+        return '';
+      },
+    };
+    return { cli, calls };
+  }
+  const root = process.cwd();
+  const name = modelProviderName(getInstallSlug(root));
+  const SECRET = 'sk-ant-oat01-secret';
+
+  it('first time: imports the profile, then creates the provider with the value only in the child env', async () => {
+    const { cli, calls } = fakeCli({ profiles: [], providers: [] });
+    expect(await storeModelCredential({ kind: 'oauth', value: SECRET }, root, cli)).toBe('created');
+    expect(calls.map((c) => c.args.slice(0, 3).join(' '))).toEqual([
+      'provider profile list',
+      'provider profile import',
+      'provider list -o',
+      'provider create --name',
+    ]);
+    const create = calls.at(-1)!;
+    expect(create.args).toEqual([
+      'provider',
+      'create',
+      '--name',
+      name,
+      '--type',
+      MODEL_PROFILE_ID.oauth,
+      '--credential',
+      'CLAUDE_CODE_OAUTH_TOKEN',
+    ]);
+    expect(create.env).toEqual({ CLAUDE_CODE_OAUTH_TOKEN: SECRET });
+    expect(calls.flatMap((c) => c.args).join(' ')).not.toContain(SECRET);
+  });
+
+  it('same kind: updates in place and waits for attached sandboxes', async () => {
+    const { cli, calls } = fakeCli({
+      profiles: [MODEL_PROFILE_ID.oauth],
+      providers: [{ name, type: MODEL_PROFILE_ID.oauth }],
+    });
+    expect(await storeModelCredential({ kind: 'oauth', value: SECRET }, root, cli)).toBe('updated');
+    expect(calls.at(-1)!.args).toEqual([
+      'provider',
+      'update',
+      name,
+      '--credential',
+      'CLAUDE_CODE_OAUTH_TOKEN',
+      '--wait',
+    ]);
+    expect(calls.some((c) => c.args[2] === 'import')).toBe(false);
+  });
+
+  it('other kind: recreates the provider with the other profile', async () => {
+    const { cli, calls } = fakeCli({
+      profiles: [MODEL_PROFILE_ID.oauth, MODEL_PROFILE_ID['api-key']],
+      providers: [{ name, type: MODEL_PROFILE_ID.oauth }],
+    });
+    expect(await storeModelCredential({ kind: 'api-key', value: 'sk-ant-api03-k' }, root, cli)).toBe('replaced');
+    expect(calls.slice(-2).map((c) => c.args.slice(0, 2).join(' '))).toEqual(['provider delete', 'provider create']);
+  });
+
+  it('reports the stored kind, or null', async () => {
+    expect(await storedModelCredentialKind(root, fakeCli({ profiles: [], providers: [] }).cli)).toBeNull();
+    const withKey = fakeCli({ profiles: [], providers: [{ name, type: MODEL_PROFILE_ID['api-key'] }] });
+    expect(await storedModelCredentialKind(root, withKey.cli)).toBe('api-key');
+  });
+});
+
+describe('agent guidance', () => {
+  it('never contains the literal placeholder prefix (OpenShell refuses model requests that carry it)', () => {
+    const dir = path.join(path.dirname(new URL(import.meta.url).pathname), '..', 'payload', 'container', 'skills');
+    const files = fs.readdirSync(dir, { recursive: true }).map(String).filter((f) => f.endsWith('.md'));
+    expect(files.length).toBeGreaterThan(0);
+    for (const f of files) expect(fs.readFileSync(path.join(dir, f), 'utf8')).not.toMatch(/openshell:resolve/i);
   });
 });

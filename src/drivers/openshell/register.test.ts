@@ -38,9 +38,6 @@ describe('settingsFromEnv', () => {
         NANOCLAW_OPENSHELL_BASE_RO: '/usr, /bin,/lib,/lib64,/etc,/app',
         NANOCLAW_OPENSHELL_BASE_RW: '/tmp',
         NANOCLAW_OPENSHELL_LANDLOCK: 'hard_requirement',
-        NANOCLAW_OPENSHELL_GATEWAY_PORTS: '10255',
-        NANOCLAW_OPENSHELL_GATEWAY_BINARIES: '/usr/local/bin/bun,/usr/bin/node',
-        NANOCLAW_OPENSHELL_GATEWAY_HOST: 'host.openshell.internal',
         NANOCLAW_OPENSHELL_POLL_MS: '5000',
       }),
     ).toEqual({
@@ -50,19 +47,12 @@ describe('settingsFromEnv', () => {
         baseReadOnly: ['/usr', '/bin', '/lib', '/lib64', '/etc', '/app'],
         baseReadWrite: ['/tmp'],
         landlockCompatibility: 'hard_requirement',
-        gatewayEgress: {
-          ports: [10255],
-          binaries: ['/usr/local/bin/bun', '/usr/bin/node'],
-          host: 'host.openshell.internal',
-        },
       },
     });
   });
 
   it.each([
     [{ NANOCLAW_OPENSHELL_LANDLOCK: 'strict' }, /best_effort or hard_requirement/],
-    [{ NANOCLAW_OPENSHELL_GATEWAY_PORTS: '10255' }, /must be set together/],
-    [{ NANOCLAW_OPENSHELL_GATEWAY_PORTS: 'abc', NANOCLAW_OPENSHELL_GATEWAY_BINARIES: '/x' }, /must be TCP ports/],
     [{ NANOCLAW_OPENSHELL_POLL_MS: '10' }, />= 250/],
   ])('refuses bad settings %j', (env, re) => {
     expect(() => settingsFromEnv(env)).toThrow(re);

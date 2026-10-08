@@ -18,7 +18,7 @@
  * Which gateway is which. This step installs OpenShell's OWN gateway — its
  * control plane (`openshell-gateway`, 127.0.0.1:17670), which creates and
  * polices the sandboxes. NanoClaw's "openshell" gateway is something else: the
- * add-openshell skill's model relay on the host, applied by the setup
+ * add-openshell credential gateway, applied by the setup
  * wizard's gateway step (`installGateway('openshell')`). Neither installs the
  * other, so nothing is installed twice.
  *

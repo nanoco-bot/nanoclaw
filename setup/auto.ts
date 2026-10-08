@@ -72,7 +72,6 @@ import { brightSelect } from './lib/bright-select.js';
 import { buildContainerImage } from './lib/container-build.js';
 import { offerClaudeOnFailure } from './lib/claude-handoff.js';
 import { setPickedProvider } from './lib/picked-provider.js';
-import { authRunsAfterService } from './lib/step-order.js';
 import { getPlatform } from './platform.js';
 import {
   AGENT_IMAGE_PIN,
@@ -390,124 +389,117 @@ async function main(): Promise<void> {
   }
 
   let agentProvider: string | undefined;
-  // Agent auth normally runs here, before mounts/service; on macOS with
-  // OpenShell it runs right after the service step instead (the credential
-  // goes into the LaunchAgent plist that step writes). See setup/lib/step-order.ts.
-  const authAfterService = authRunsAfterService({ openshellEnabled, platform: getPlatform() });
-  async function runAuthStep(): Promise<void> {
-    if (!skip.has('auth')) {
-      // Agent runtime pick. Claude is the default and a no-op — choosing it
-      // runs the existing Claude auth flow unchanged. A branch provider walks
-      // its own auth (e.g. Codex: ChatGPT subscription or API key, vault-only)
-      // and verifies its payload is wired. The pick installs and authenticates
-      // the runtime; it is NOT an install-wide default — and it is NOT a
-      // creation flag. Provider is a DB property of a group: the creation flows
-      // create provider-agnostic groups, and setup sets the picked provider on
-      // each via `ncl groups config update --provider` right after creating it
-      // (the creation scripts inherit it and apply at create — see picked-provider). Existing groups switch the
-      // same way (docs/provider-migration.md).
-      // OpenShell's gateway relays Claude credentials only, so there is no
-      // runtime to choose: skip the picker (Claude's auth below then runs the
-      // OpenShell gateway's own sign-in via runGatewayAuth).
-      agentProvider = openshellEnabled ? await openShellAgentProvider() : await askAgentProviderChoice();
-      setPickedProvider(agentProvider);
+  if (!skip.has('auth')) {
+    // Agent runtime pick. Claude is the default and a no-op — choosing it
+    // runs the existing Claude auth flow unchanged. A branch provider walks
+    // its own auth (e.g. Codex: ChatGPT subscription or API key, vault-only)
+    // and verifies its payload is wired. The pick installs and authenticates
+    // the runtime; it is NOT an install-wide default — and it is NOT a
+    // creation flag. Provider is a DB property of a group: the creation flows
+    // create provider-agnostic groups, and setup sets the picked provider on
+    // each via `ncl groups config update --provider` right after creating it
+    // (the creation scripts inherit it and apply at create — see picked-provider). Existing groups switch the
+    // same way (docs/provider-migration.md).
+    // OpenShell's gateway relays Claude credentials only, so there is no
+    // runtime to choose: skip the picker (Claude's auth below then runs the
+    // OpenShell gateway's own sign-in via runGatewayAuth).
+    agentProvider = openshellEnabled ? await openShellAgentProvider() : await askAgentProviderChoice();
+    setPickedProvider(agentProvider);
 
-      // A pulled image bakes /app/node_modules and the CLI manifest, and every
-      // non-claude runtime changes one of them — so it needs an image this
-      // machine builds. Settle it here: buildContainerImage() below refuses on a
-      // pinned install, and reaching that refusal aborts setup with no way out
-      // short of re-running it.
-      const providerDescriptor = getInstallableProviderDescriptor(agentProvider);
-      if (providerImagePolicy(agentProvider) === 'local-required' && readImageSource() === 'hardened') {
-        const leave = ensureAnswer(
-          await p.confirm({
-            message: `${agentProvider} needs a sandbox image built on this machine. Stop using the pre-built one?`,
-            initialValue: true,
-          }),
+    // A pulled image bakes /app/node_modules and the CLI manifest, and every
+    // non-claude runtime changes one of them — so it needs an image this
+    // machine builds. Settle it here: buildContainerImage() below refuses on a
+    // pinned install, and reaching that refusal aborts setup with no way out
+    // short of re-running it.
+    const providerDescriptor = getInstallableProviderDescriptor(agentProvider);
+    if (providerImagePolicy(agentProvider) === 'local-required' && readImageSource() === 'hardened') {
+      const leave = ensureAnswer(
+        await p.confirm({
+          message: `${agentProvider} needs a sandbox image built on this machine. Stop using the pre-built one?`,
+          initialValue: true,
+        }),
+      );
+      if (!leave) {
+        await fail(
+          'auth',
+          `${agentProvider} can't run on the pre-built sandbox image.`,
+          'Re-run setup and choose Claude to keep the pre-built image.',
         );
-        if (!leave) {
-          await fail(
-            'auth',
-            `${agentProvider} can't run on the pre-built sandbox image.`,
-            'Re-run setup and choose Claude to keep the pre-built image.',
-          );
-        }
-        writeImageSource('local');
-        setupLog.userInput('image_source', 'local');
-        p.log.info(brandBody('Switched back to a locally built sandbox image.'));
       }
-
-      let providerEntry = getSetupProvider(agentProvider);
-      if (!providerEntry) {
-        // A non-claude provider picked from the hard-wired list isn't wired in
-        // this install yet — install it by applying its `/add-<name>` SKILL.md
-        // in-process via the directive engine (channel style, idempotent:
-        // self-skips if already installed), rebuild the image (the container step
-        // already ran, the CLI manifest just changed), then load the payload's
-        // setup module so it self-registers.
-        if (!providerDescriptor) throw new Error(`No install descriptor for provider '${agentProvider}'`);
-        const skillDir = providerDescriptor.skillDir;
-        const s = p.spinner();
-        s.start(`Installing ${agentProvider}…`);
-        let blockers: string[];
-        let hostContractModules: string[];
-        try {
-          ({ blockers, hostContractModules } = await applyProviderSkill(skillDir, process.cwd()));
-        } catch (err) {
-          s.stop(`Couldn't install ${agentProvider}.`, 1);
-          const message = err instanceof Error ? err.message : String(err);
-          await fail(`add-${agentProvider}`, `Couldn't install ${agentProvider}.`, message);
-          return; // unreachable — fail() exits — but narrows blockers for TS
-        }
-        if (blockers.length) {
-          s.stop(`Couldn't install ${agentProvider}.`, 1);
-          await fail(`add-${agentProvider}`, `Couldn't install ${agentProvider}.`, blockers.join('; '));
-        }
-        s.stop(`${agentProvider} installed.`);
-        p.log.info(brandBody('Rebuilding the container image with the new provider…'));
-        // The rebuild is not optional here: the provider's CLI manifest is baked
-        // into the image, so continuing past a failed build would authenticate a
-        // runtime the container cannot actually start.
-        const rebuild = buildContainerImage();
-        if (!rebuild.ok) {
-          await fail(
-            `add-${agentProvider}`,
-            `Couldn't rebuild the container image for ${agentProvider}. ${rebuild.message}`,
-            rebuild.hint,
-          );
-        }
-        // This process imported src/provider-contracts/index.ts at startup, and
-        // ESM caches the barrel, so a line appended to it now never evaluates
-        // here; load the contract module directly before the auth step asks the
-        // gateway store for model endpoints.
-        await loadHostContractModules(hostContractModules);
-        await import(`./providers/${agentProvider}.js`);
-        providerEntry = getSetupProvider(agentProvider);
-      }
-      if (providerEntry?.runAuth) {
-        try {
-          await providerEntry.runAuth();
-          await providerEntry.runInstallCheck?.();
-        } catch (err) {
-          await fail(
-            'auth',
-            `Couldn't authenticate or verify ${agentProvider}.`,
-            err instanceof Error ? err.message : String(err),
-          );
-        }
-      } else {
-        if (!gatewayKind) throw new Error('No gateway is selected for agent authentication');
-        runGatewayAuth(gatewayKind, agentProvider);
-      }
-      // Persist the pick as the instance-wide default so every future group
-      // (channel-approved, ncl-created) is created on this provider. Read from
-      // .env at host start; per-group `ncl groups config update --provider` wins.
-      // Only after install + auth succeeded — a failed setup must not leave new
-      // groups defaulting to an unauthenticated runtime.
-      upsertEnvVar('DEFAULT_AGENT_PROVIDER', agentProvider);
+      writeImageSource('local');
+      setupLog.userInput('image_source', 'local');
+      p.log.info(brandBody('Switched back to a locally built sandbox image.'));
     }
+
+    let providerEntry = getSetupProvider(agentProvider);
+    if (!providerEntry) {
+      // A non-claude provider picked from the hard-wired list isn't wired in
+      // this install yet — install it by applying its `/add-<name>` SKILL.md
+      // in-process via the directive engine (channel style, idempotent:
+      // self-skips if already installed), rebuild the image (the container step
+      // already ran, the CLI manifest just changed), then load the payload's
+      // setup module so it self-registers.
+      if (!providerDescriptor) throw new Error(`No install descriptor for provider '${agentProvider}'`);
+      const skillDir = providerDescriptor.skillDir;
+      const s = p.spinner();
+      s.start(`Installing ${agentProvider}…`);
+      let blockers: string[];
+      let hostContractModules: string[];
+      try {
+        ({ blockers, hostContractModules } = await applyProviderSkill(skillDir, process.cwd()));
+      } catch (err) {
+        s.stop(`Couldn't install ${agentProvider}.`, 1);
+        const message = err instanceof Error ? err.message : String(err);
+        await fail(`add-${agentProvider}`, `Couldn't install ${agentProvider}.`, message);
+        return; // unreachable — fail() exits — but narrows blockers for TS
+      }
+      if (blockers.length) {
+        s.stop(`Couldn't install ${agentProvider}.`, 1);
+        await fail(`add-${agentProvider}`, `Couldn't install ${agentProvider}.`, blockers.join('; '));
+      }
+      s.stop(`${agentProvider} installed.`);
+      p.log.info(brandBody('Rebuilding the container image with the new provider…'));
+      // The rebuild is not optional here: the provider's CLI manifest is baked
+      // into the image, so continuing past a failed build would authenticate a
+      // runtime the container cannot actually start.
+      const rebuild = buildContainerImage();
+      if (!rebuild.ok) {
+        await fail(
+          `add-${agentProvider}`,
+          `Couldn't rebuild the container image for ${agentProvider}. ${rebuild.message}`,
+          rebuild.hint,
+        );
+      }
+      // This process imported src/provider-contracts/index.ts at startup, and
+      // ESM caches the barrel, so a line appended to it now never evaluates
+      // here; load the contract module directly before the auth step asks the
+      // gateway store for model endpoints.
+      await loadHostContractModules(hostContractModules);
+      await import(`./providers/${agentProvider}.js`);
+      providerEntry = getSetupProvider(agentProvider);
+    }
+    if (providerEntry?.runAuth) {
+      try {
+        await providerEntry.runAuth();
+        await providerEntry.runInstallCheck?.();
+      } catch (err) {
+        await fail(
+          'auth',
+          `Couldn't authenticate or verify ${agentProvider}.`,
+          err instanceof Error ? err.message : String(err),
+        );
+      }
+    } else {
+      if (!gatewayKind) throw new Error('No gateway is selected for agent authentication');
+      runGatewayAuth(gatewayKind, agentProvider);
+    }
+    // Persist the pick as the instance-wide default so every future group
+    // (channel-approved, ncl-created) is created on this provider. Read from
+    // .env at host start; per-group `ncl groups config update --provider` wins.
+    // Only after install + auth succeeded — a failed setup must not leave new
+    // groups defaulting to an unauthenticated runtime.
+    upsertEnvVar('DEFAULT_AGENT_PROVIDER', agentProvider);
   }
-  if (!authAfterService) await runAuthStep();
 
   if (!skip.has('mounts')) {
     const res = await runQuietStep(
@@ -588,8 +580,6 @@ async function main(): Promise<void> {
       );
     }
   }
-
-  if (authAfterService) await runAuthStep();
 
   let displayName: string | undefined;
   async function resolveDisplayName(): Promise<string> {

@@ -33,6 +33,16 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 
+import { readEnvFile } from '../../src/env.js';
+import { getInstallSlug } from '../../src/install-slug.js';
+import { OPENSHELL_ENV_KEYS, openShellGatewayEnv, openShellSettingsEnv } from '../../src/drivers/openshell/config.js';
+import {
+  MODEL_PROFILE_ID,
+  modelProviderName,
+  type ModelCredentialKind,
+} from '../../src/drivers/openshell/model-provider.js';
+import { settingsFromEnv } from '../../src/drivers/openshell/settings.js';
+
 export interface RunResult {
   code: number;
   stdout: string;
@@ -56,6 +66,26 @@ export const realRun: Run = (cmd, args, opts = {}) => {
     stderr: `${r.stderr ?? ''}${r.error ? `${r.stderr ? '\n' : ''}${r.error.message}` : ''}`,
   };
 };
+
+// ---------- model credential ----------
+
+/** The kind of Claude credential OpenShell holds for this install, or null when it holds none. */
+export function storedModelCredential(projectRoot: string, run: Run = realRun): ModelCredentialKind | null {
+  const settingsEnv = openShellSettingsEnv(process.env, readEnvFile(OPENSHELL_ENV_KEYS, projectRoot));
+  const r = run(settingsFromEnv(settingsEnv).bin, ['provider', 'list', '-o', 'json'], {
+    env: openShellGatewayEnv(settingsEnv),
+  });
+  if (r.code !== 0) return null;
+  let providers: { name?: string; type?: string }[] = [];
+  try {
+    providers = (JSON.parse(r.stdout) as { providers?: typeof providers }).providers ?? [];
+  } catch {
+    return null;
+  }
+  const name = modelProviderName(getInstallSlug(projectRoot));
+  const type = providers.find((p) => p.name === name)?.type;
+  return (Object.keys(MODEL_PROFILE_ID) as ModelCredentialKind[]).find((k) => MODEL_PROFILE_ID[k] === type) ?? null;
+}
 
 // ---------- host support ----------
 
