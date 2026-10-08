@@ -255,11 +255,11 @@ export function normalizeOpenShellError(error: unknown, now: () => number = Date
   const msg = cliErrorSummary(error instanceof Error ? error.message : String(error));
   const missingProvider = /provider '([^']+)' not found/i.exec(msg);
   if (missingProvider) {
-    // An attached group provider (openshell_group_providers) the gateway does
-    // not have. Retrying cannot fix it; the operator's store must.
+    // A provider the policy file attaches but the OpenShell gateway does not
+    // have. Retrying cannot fix it; the operator must create it or drop it.
     return specInvalid(
-      `OpenShell provider '${missingProvider[1]}' is attached to this agent group but does not exist in the gateway; ` +
-        `create it (\`ncl openshell-provider attach --type …\`) or detach it (\`ncl openshell-provider detach\`). OpenShell said: ${msg}`,
+      `OpenShell provider '${missingProvider[1]}' is attached to this agent group but does not exist in OpenShell; ` +
+        `create it (\`openshell provider create\`) or remove it from the group's providers in the OpenShell policy file. OpenShell said: ${msg}`,
     );
   }
   if (/reserved for the OpenShell workspace/i.test(msg)) {

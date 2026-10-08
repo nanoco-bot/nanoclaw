@@ -4,7 +4,7 @@ import path from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { credentialScriptEnv, policyApproveFrame, policyListFrame } from './commands.js';
+import { credentialScriptEnv } from './openshell-ops.js';
 import {
   AUTH_SCRIPT,
   PROJECT_ROOT,
@@ -139,48 +139,36 @@ describe('realDeps (execFile mocked)', () => {
 });
 
 describe('real wiring without OpenShell', () => {
-  it('ncl openshell-policy is dispatched in-process and reaches the configured openshell binary (stub)', async () => {
+  function stubOpenShell(script: string): string {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'os-ui-stub-'));
     tmp.push(dir);
     const stub = path.join(dir, 'openshell');
-    // STUB, not OpenShell: echoes how it was invoked.
-    fs.writeFileSync(
-      stub,
-      '#!/bin/sh\nif [ "$1" = settings ]; then echo \'{"settings":{}}\'; exit 0; fi\necho "argv: $*"\necho "env: NO_COLOR=$NO_COLOR OPENSHELL_COLOR=$OPENSHELL_COLOR"\n',
-      { mode: 0o755 },
+    fs.writeFileSync(stub, `#!/bin/sh\n${script}\n`, { mode: 0o755 });
+    return stub;
+  }
+
+  it('runOpenShell reaches the configured binary with colour off (stub, not OpenShell)', async () => {
+    vi.stubEnv(
+      'OPENSHELL_BIN',
+      stubOpenShell('echo "argv: $*"; echo "env: NO_COLOR=$NO_COLOR OPENSHELL_COLOR=$OPENSHELL_COLOR"'),
     );
-    vi.stubEnv('OPENSHELL_BIN', stub);
-    const deps = realDeps();
-
-    const list = await deps.dispatchPolicy(policyListFrame('ncl-0123abcd'));
-    expect(list.ok).toBe(true);
-    const data = list.data as { output: string; proposals: string; note: string };
-    expect(data.output).toContain('argv: rule get ncl-0123abcd --status pending');
-    expect(data.output).toContain('env: NO_COLOR=1 OPENSHELL_COLOR=never');
-    expect(data.proposals).toBe('unset');
-    expect(data.note).toMatch(/agent_policy_proposals_enabled/);
-
-    const approve = await deps.dispatchPolicy(policyApproveFrame('ncl-0123abcd', 'ck-1'));
-    expect((approve.data as { output: string }).output).toContain('argv: rule approve ncl-0123abcd --chunk-id ck-1');
-
-    // The resource's own validation still applies in-process.
-    const bad = await deps.dispatchPolicy({ command: 'openshell-policy-list', args: { sandbox: 'Not A Sandbox' } });
-    expect(bad).toMatchObject({
-      ok: false,
-      error: { message: expect.stringMatching(/not a valid OpenShell sandbox name/) },
-    });
+    const r = await realDeps().runOpenShell(['rule', 'get', 'ncl-0123abcd', '--status', 'pending'], {});
+    expect(r.code).toBe(0);
+    expect(r.stdout).toContain('argv: rule get ncl-0123abcd --status pending');
+    expect(r.stdout).toContain('env: NO_COLOR=1 OPENSHELL_COLOR=never');
   });
 
-  it('the credential script really runs (node + tsx + auth.ts) and fails loudly here: no systemd in this sandbox', async () => {
+  it('the credential script really runs (node + tsx + auth.ts) and fails loudly when OpenShell refuses, never echoing the key', async () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'os-ui-home-'));
     tmp.push(home);
+    const stub = stubOpenShell('echo "gateway unreachable" >&2; exit 1');
     const env = credentialScriptEnv(
       { kind: 'api-key', value: 'sk-ant-api03-FAKE-NOT-REAL' },
-      { PATH: process.env.PATH, HOME: home },
+      { PATH: process.env.PATH, HOME: home, OPENSHELL_BIN: stub },
     );
     const r = await realDeps().runCredentialScript(env);
     expect(r.code).toBe(1);
-    expect(r.stderr).toMatch(/systemd/);
+    expect(r.stderr).toMatch(/gateway unreachable/);
     expect(r.stdout + r.stderr).not.toContain('sk-ant-api03-FAKE-NOT-REAL');
   }, 30_000);
 });

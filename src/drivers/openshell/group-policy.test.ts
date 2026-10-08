@@ -212,9 +212,9 @@ describe('settingsFromEnv: NANOCLAW_OPENSHELL_POLICY_FILE', () => {
     expect(s.policy.egress).toEqual([MODEL]);
   });
 
-  it('names the file when it is not JSON', () => {
+  it('names the file when it is not YAML or JSON', () => {
     expect(() => settingsFromEnv({ NANOCLAW_OPENSHELL_POLICY_FILE: '/p' }, () => '{nope')).toThrow(
-      /NANOCLAW_OPENSHELL_POLICY_FILE='\/p' is not readable JSON/,
+      /OpenShell policy file '\/p' is not readable YAML\/JSON/,
     );
   });
 });

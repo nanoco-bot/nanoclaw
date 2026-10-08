@@ -8,6 +8,8 @@
  */
 import fs from 'node:fs';
 
+import { parse as parseYaml } from 'yaml';
+
 import { mergePolicyOptions, parsePolicyConfig } from './group-policy.js';
 import type { PolicyOptions } from './policy.js';
 
@@ -38,13 +40,15 @@ function csv(value: string | undefined): string[] | undefined {
 }
 
 /**
- * NANOCLAW_OPENSHELL_POLICY_FILE (JSON, see group-policy.ts) supplies defaults
- * and per-group entries; the individual NANOCLAW_OPENSHELL_* variables
- * override the file's defaults field by field.
+ * The policy file (YAML or JSON, see group-policy.ts) supplies defaults and
+ * per-group entries; the individual NANOCLAW_OPENSHELL_* variables override
+ * the file's defaults field by field. The file is NANOCLAW_OPENSHELL_POLICY_FILE,
+ * else `defaultPolicyFile` when it exists.
  */
 export function settingsFromEnv(
   env: NodeJS.ProcessEnv,
   readFile: (path: string) => string = (p) => fs.readFileSync(p, 'utf8'),
+  defaultPolicyFile?: string,
 ): EnvDriverSettings {
   const policy: PolicyOptions = {};
   const ro = csv(env.NANOCLAW_OPENSHELL_BASE_RO);
@@ -69,16 +73,18 @@ export function settingsFromEnv(
     }
   }
 
-  const file = env.NANOCLAW_OPENSHELL_POLICY_FILE?.trim();
+  const file =
+    env.NANOCLAW_OPENSHELL_POLICY_FILE?.trim() ||
+    (defaultPolicyFile && fs.existsSync(defaultPolicyFile) ? defaultPolicyFile : undefined);
   let merged = policy;
   let groupPolicy: Record<string, PolicyOptions> | undefined;
   if (file) {
     let raw: unknown;
     try {
-      raw = JSON.parse(readFile(file));
+      raw = parseYaml(readFile(file));
     } catch (err) {
       throw new Error(
-        `NANOCLAW_OPENSHELL_POLICY_FILE='${file}' is not readable JSON: ${err instanceof Error ? err.message : String(err)}`,
+        `OpenShell policy file '${file}' is not readable YAML/JSON: ${err instanceof Error ? err.message : String(err)}`,
         { cause: err },
       );
     }
