@@ -569,7 +569,7 @@ export function createHandler(deps: UiDeps): (req: IncomingMessage, res: ServerR
         throw new HttpError(400, (err as Error).message);
       }
       const run = scrubExec(await deps.runCredentialScript(env), [String(body.value ?? '')]);
-      // The confirmation is what the relay will actually see, read back the way verify does.
+      // The confirmation is read back from OpenShell, the way verify does.
       const cred = deps.checkCredentials();
       const detected = parseCredentialSource(cred.credentialSource);
       send(res, run.code === 0 && cred.credentials === 'configured' ? 200 : 502, {

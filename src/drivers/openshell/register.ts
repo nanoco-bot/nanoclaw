@@ -14,6 +14,7 @@
  * The factory receives the fully-resolved MountPolicy; everything else the
  * driver owns (here: operator settings from `.env` / the environment).
  */
+import { INSTALL_SLUG } from '../../config.js';
 import { getAgentGroupByFolder } from '../../db/agent-groups.js';
 import { listGroupEgressRules, listGroupProviders } from '../../db/openshell-group-resources.js';
 import { realOpenShellCli } from './cli.js';
@@ -21,6 +22,7 @@ import { openShellGatewayEnv, openShellSettingsEnv } from './config.js';
 import { OpenShellSessionDriver } from './driver.js';
 import type { EgressRule } from './policy.js';
 import { registerSessionDriver } from '../driver-registry.js';
+import { MODEL_EGRESS, modelProviderName } from './model-provider.js';
 import { settingsFromEnv } from './settings.js';
 
 export const OPENSHELL_DRIVER_KIND = 'openshell';
@@ -51,8 +53,9 @@ registerSessionDriver(OPENSHELL_DRIVER_KIND, (policy) => {
   return new OpenShellSessionDriver({
     ...policy,
     cli: realOpenShellCli(settings.bin, openShellGatewayEnv(settingsEnv)),
-    policy: settings.policy,
+    policy: { gatewayEgress: MODEL_EGRESS, ...settings.policy },
     ...(settings.groupPolicy ? { groupPolicy: settings.groupPolicy } : {}),
+    modelProvider: modelProviderName(INSTALL_SLUG),
     // Durable per-group resources from the central DB, read at every sandbox
     // creation (ncl openshell-provider / openshell-network write them).
     groupProviders: dbGroupProviders,

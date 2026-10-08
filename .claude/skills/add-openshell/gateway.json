@@ -1,6 +1,6 @@
 {
   "kind": "openshell",
   "label": "NVIDIA OpenShell",
-  "description": "Run agents in OpenShell sandboxes; a host relay adds model credentials (requires the OpenShell runtime driver).",
+  "description": "Run agents in OpenShell sandboxes; OpenShell holds the Claude credential and injects it on the way out (requires the OpenShell runtime driver).",
   "default": false
 }

@@ -53,9 +53,8 @@ export interface PolicyOptions {
   /**
    * Realizes `spec.networkAccess` as one network rule. The intent carries a
    * destination name but no port or binary list, and OpenShell rules need
-   * both, so the operator supplies them here. Unset = no network rule at all,
-   * i.e. OpenShell's default deny: the session fails CLOSED (cannot reach the
-   * gateway), never open.
+   * both. Unset = no rule (OpenShell's default deny: fails closed). The host
+   * passes the model endpoint's port and binaries (register.ts).
    */
   gatewayEgress?: {
     ports: number[];

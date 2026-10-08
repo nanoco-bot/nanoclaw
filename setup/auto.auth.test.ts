@@ -387,31 +387,18 @@ describe('setup wizard step order: agent auth vs the service step', () => {
     recordAuth();
   }
 
-  it('macOS + OpenShell: the service step runs BEFORE gateway auth (its plist must exist first)', async () => {
-    openShell('macos');
+  it.each(['macos', 'linux'])('%s + OpenShell: auth before mounts and service, like every gateway', async (platform) => {
+    openShell(platform);
     await runWizardUntilExit();
     expect(fixture.sequence).toEqual([
       'step:openshell',
       'step:openshell-install',
+      'gateway-auth:openshell:claude',
       'step:mounts',
       'step:service',
-      'gateway-auth:openshell:claude',
       'end',
     ]);
     expect(fixture.upsertEnvVar).toHaveBeenCalledWith('DEFAULT_AGENT_PROVIDER', 'claude');
-  });
-
-  it('Linux + OpenShell: unchanged — auth before mounts and service (the drop-in may precede its unit)', async () => {
-    openShell('linux');
-    await runWizardUntilExit();
-    expect(fixture.sequence).toEqual([
-      'step:openshell',
-      'step:openshell-install',
-      'gateway-auth:openshell:claude',
-      'step:mounts',
-      'step:service',
-      'end',
-    ]);
   });
 
   it.each([

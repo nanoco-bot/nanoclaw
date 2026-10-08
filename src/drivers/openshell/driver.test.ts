@@ -222,6 +222,27 @@ describe('start()', () => {
   });
 });
 
+describe('the model provider', () => {
+  it('is attached to every sandbox, ahead of the group providers, once', async () => {
+    const cli = new FakeOpenShellCli();
+    cli.rules = [
+      { match: /^sandbox get /, fails: NOT_FOUND },
+      { match: /^sandbox create /, stdout: '' },
+    ];
+    const driver = new OpenShellSessionDriver({
+      ...FIXTURE_POLICY,
+      cli,
+      logger: quietLogger,
+      modelProvider: 'nanoclaw-test-claude',
+      groupProviders: () => ['github-alice', 'nanoclaw-test-claude'],
+    });
+    await (await driver.prepare(fixtureSpec())).start();
+    const create = cli.callsMatching(/^sandbox create /)[0];
+    const providers = create.flatMap((arg, i) => (create[i - 1] === '--provider' ? [arg] : []));
+    expect(providers).toEqual(['nanoclaw-test-claude', 'github-alice']);
+  });
+});
+
 describe('isNotFound: only a missing SANDBOX reads as "gone"', () => {
   it.each([
     'Error:   × code: \'Some requested entity was not found\', message: "sandbox not found"',

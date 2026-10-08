@@ -16,7 +16,9 @@ import { OPENSHELL_SETTING_KEYS, settingsFromEnv } from './settings.js';
 /** Read by the `openshell` CLI itself to pick a gateway; forwarded, never interpreted. */
 export const OPENSHELL_GATEWAY_KEYS = ['OPENSHELL_GATEWAY', 'OPENSHELL_GATEWAY_ENDPOINT'] as const;
 
-const ALL_KEYS = [...OPENSHELL_SETTING_KEYS, ...OPENSHELL_GATEWAY_KEYS];
+/** Every key OpenShell configuration reads from `.env`. */
+export const OPENSHELL_ENV_KEYS = [...OPENSHELL_SETTING_KEYS, ...OPENSHELL_GATEWAY_KEYS];
+const ALL_KEYS = OPENSHELL_ENV_KEYS;
 
 export function openShellSettingsEnv(
   env: NodeJS.ProcessEnv = process.env,

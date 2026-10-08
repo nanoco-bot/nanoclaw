@@ -225,7 +225,7 @@ $('cred-save').addEventListener('click', (e) =>
         : null,
     );
     if (ok) {
-      toast('Credential saved', 'The model relay reads it from the service environment.');
+      toast('Credential saved', 'OpenShell holds it; new requests use it.');
       $('cred-dialog').close();
     } else toast('Credential not saved', data.error || 'See the output in the dialog.', 'bad');
   }),

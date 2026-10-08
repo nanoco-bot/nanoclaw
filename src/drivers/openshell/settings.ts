@@ -17,9 +17,6 @@ export const OPENSHELL_SETTING_KEYS = [
   'NANOCLAW_OPENSHELL_BASE_RO',
   'NANOCLAW_OPENSHELL_BASE_RW',
   'NANOCLAW_OPENSHELL_LANDLOCK',
-  'NANOCLAW_OPENSHELL_GATEWAY_PORTS',
-  'NANOCLAW_OPENSHELL_GATEWAY_BINARIES',
-  'NANOCLAW_OPENSHELL_GATEWAY_HOST',
   'NANOCLAW_OPENSHELL_POLL_MS',
   'NANOCLAW_OPENSHELL_POLICY_FILE',
 ] as const;
@@ -61,23 +58,6 @@ export function settingsFromEnv(
       throw new Error(`NANOCLAW_OPENSHELL_LANDLOCK='${landlock}' must be best_effort or hard_requirement`);
     }
     policy.landlockCompatibility = landlock;
-  }
-
-  const ports = csv(env.NANOCLAW_OPENSHELL_GATEWAY_PORTS);
-  const binaries = csv(env.NANOCLAW_OPENSHELL_GATEWAY_BINARIES);
-  if (ports || binaries) {
-    if (!ports || !binaries) {
-      throw new Error('NANOCLAW_OPENSHELL_GATEWAY_PORTS and NANOCLAW_OPENSHELL_GATEWAY_BINARIES must be set together');
-    }
-    const parsed = ports.map((p) => Number(p));
-    if (!parsed.every((p) => Number.isInteger(p) && p > 0 && p < 65536)) {
-      throw new Error(`NANOCLAW_OPENSHELL_GATEWAY_PORTS='${env.NANOCLAW_OPENSHELL_GATEWAY_PORTS}' must be TCP ports`);
-    }
-    policy.gatewayEgress = {
-      ports: parsed,
-      binaries,
-      ...(env.NANOCLAW_OPENSHELL_GATEWAY_HOST?.trim() ? { host: env.NANOCLAW_OPENSHELL_GATEWAY_HOST.trim() } : {}),
-    };
   }
 
   const poll = env.NANOCLAW_OPENSHELL_POLL_MS?.trim();

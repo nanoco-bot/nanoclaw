@@ -13,8 +13,12 @@ import { readEnvFile } from '../src/env.js';
 import { log } from '../src/log.js';
 import { getLaunchdLabel, getSystemdUnit } from '../src/install-slug.js';
 import { inspectCentralDb } from './central-db-inspection.js';
-import { inspectInstallCredential, type ServiceCredential } from './lib/openshell-credential.js';
-import { inspectOpenShellRuntime, SUPERVISOR_IMAGE_KEY, type RuntimeReport } from './lib/openshell-runtime.js';
+import {
+  inspectOpenShellRuntime,
+  storedModelCredential,
+  SUPERVISOR_IMAGE_KEY,
+  type RuntimeReport,
+} from './lib/openshell-runtime.js';
 import { inspectAgentImage, readImageSource } from './lib/registry-state.js';
 import { getPlatform, getServiceManager, hasSystemd, isRoot } from './platform.js';
 import { emitStatus } from './status.js';
@@ -287,17 +291,14 @@ export async function run(_args: string[]): Promise<void> {
 }
 
 /**
- * Is there a model credential where the selected gateway actually reads it?
- *
- * For the OpenShell gateway that is the host service's own environment (the
- * relay reads ANTHROPIC_API_KEY / CLAUDE_CODE_OAUTH_TOKEN from process.env),
- * so the answer comes from inspectServiceCredential — a gateway name in .env
- * says nothing about whether the relay has a key. Other gateways keep the
- * existing .env-based check.
+ * Is there a model credential where the selected gateway actually keeps it?
+ * For the OpenShell gateway that is an OpenShell provider, so the answer comes
+ * from OpenShell: a gateway name in .env says nothing about whether it holds
+ * a key. Other gateways keep the existing .env-based check.
  */
 export function checkCredentials(
   projectRoot: string,
-  inspect: (root: string) => ServiceCredential = (root) => inspectInstallCredential(root),
+  storedKind: (root: string) => string | null = (root) => storedModelCredential(root),
 ): { credentials: 'configured' | 'missing'; credentialSource: string } {
   const gatewayKind = (
     process.env.NANOCLAW_GATEWAY_PROVIDER ||
@@ -307,11 +308,8 @@ export function checkCredentials(
     .trim()
     .toLowerCase();
   if (gatewayKind === 'openshell') {
-    const found = inspect(projectRoot);
-    return {
-      credentials: found.kind === 'none' ? 'missing' : 'configured',
-      credentialSource: `${found.source}:${found.kind}`,
-    };
+    const kind = storedKind(projectRoot);
+    return { credentials: kind ? 'configured' : 'missing', credentialSource: `openshell-provider:${kind ?? 'none'}` };
   }
   const envFile = path.join(projectRoot, '.env');
   if (fs.existsSync(envFile)) {

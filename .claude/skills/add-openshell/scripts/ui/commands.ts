@@ -9,7 +9,7 @@
  *  - policy: request frames for the existing `ncl openshell-policy-*` commands
  *    (src/cli/resources/openshell-policy.ts), dispatched in-process.
  */
-import { assertSafeCredential, type CredentialKind } from '../../../../../setup/lib/openshell-credential.js';
+import type { ModelCredentialKind as CredentialKind } from '../../../../../src/drivers/openshell/model-provider.js';
 import { findProfile, type ProfileTemplate } from './profiles.js';
 
 // ---------------------------------------------------------------------------
@@ -131,6 +131,9 @@ export interface CredentialSubmission {
   value: string;
 }
 
+/** Token and key characters; anything else (spaces, quotes, newlines) is a paste error. */
+const SAFE_VALUE = /^[A-Za-z0-9._~+/=-]+$/;
+
 const PREFIX: Record<CredentialKind, string> = { oauth: 'sk-ant-oat', 'api-key': 'sk-ant-api' };
 
 /**
@@ -147,7 +150,7 @@ export function credentialScriptEnv(
   if (kind !== 'oauth' && kind !== 'api-key') throw new Error("Credential kind must be 'oauth' or 'api-key'");
   const value = String(submission.value ?? '').replace(/\s+/g, '');
   if (!value.startsWith(PREFIX[kind])) throw new Error(`Must start with ${PREFIX[kind]}`);
-  assertSafeCredential({ kind, value });
+  if (!SAFE_VALUE.test(value)) throw new Error('The value has characters a credential never contains; check what was pasted');
   const env: NodeJS.ProcessEnv = { ...baseEnv };
   for (const name of CREDENTIAL_INPUT_VARS) delete env[name];
   env[kind === 'oauth' ? 'NANOCLAW_CLAUDE_CODE_OAUTH_TOKEN' : 'NANOCLAW_ANTHROPIC_API_KEY'] = value;

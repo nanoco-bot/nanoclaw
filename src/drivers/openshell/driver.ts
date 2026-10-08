@@ -103,6 +103,11 @@ export interface OpenShellDriverOptions extends MountPolicy {
    */
   groupPolicy?: Record<string, PolicyOptions>;
   /**
+   * The OpenShell provider holding this install's Claude credential
+   * (model-provider.ts). Attached to every sandbox, ahead of the group's own.
+   */
+  modelProvider?: string;
+  /**
    * OpenShell gateway provider names each agent group's sandboxes are created
    * with (`sandbox create --provider`), keyed by group FOLDER like
    * `groupPolicy`. A function is looked up at every prepare(), so an attach
@@ -254,10 +259,13 @@ export class OpenShellSessionDriver implements SessionDriver {
     // The group's durable OpenShell resources: providers to attach and raw
     // egress rules, read fresh for every new sandbox (no restart, no manual step).
     const folder = spec.labels[GROUP_FOLDER_LABEL];
-    const [providers, groupEgress] = await Promise.all([
+    const [groupProviders, groupEgress] = await Promise.all([
       lookupGroup(this.#opts.groupProviders, folder, [] as readonly string[]),
       lookupGroup(this.#opts.groupEgress, folder, [] as readonly EgressRule[]),
     ]);
+    const providers = [
+      ...new Set([...(this.#opts.modelProvider ? [this.#opts.modelProvider] : []), ...groupProviders]),
+    ];
     for (const p of providers) {
       // Refused now, not at create: a bad name in the store must not cost an allocation.
       if (!PROVIDER_NAME_RE.test(p)) throw specInvalid(`OpenShell provider name '${p}' is not valid`);

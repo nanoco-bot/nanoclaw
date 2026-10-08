@@ -13,7 +13,7 @@ command -v script >/dev/null || { echo "script(1) is required for Claude subscri
 capture=$(mktemp -t claude-setup-token.XXXXXX)
 trap 'rm -f "$capture"' EXIT
 
-echo "Complete the Claude sign-in flow. The credential is stored only in this install's systemd drop-in, for the OpenShell relay."
+echo "Complete the Claude sign-in flow. The credential is stored only in OpenShell, as this install's Claude provider."
 if script --version 2>/dev/null | grep -q util-linux; then
   script -q -c "claude setup-token" "$capture"
 else
@@ -27,4 +27,4 @@ if [[ -z "$token" ]]; then
 fi
 umask 077
 printf %s "$token" > "$output"
-echo "Claude subscription credential captured for the OpenShell relay."
+echo "Claude subscription credential captured."

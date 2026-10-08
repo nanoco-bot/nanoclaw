@@ -308,7 +308,7 @@
 <dialog id="cred-dialog" aria-labelledby="cred-title">
   <section id="credential" class="card">
     <div class="card-head"><h2 id="cred-title">Claude credential</h2><span class="badge">whole install</span><div class="grow"></div><button class="link" type="button" id="cred-close">Close</button></div>
-    <p class="lead">Used by OpenShell's model relay for every agent. Stored in the service environment, never in <code>.env</code> or a sandbox.</p>
+    <p class="lead">Every agent's Claude credential. Stored in OpenShell as this install's provider; sandboxes only ever see a placeholder.</p>
     <p id="cred-status" class="small"></p>
     <div class="grid">
       <label class="field wide"><span>Type</span>

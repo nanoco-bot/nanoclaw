@@ -56,19 +56,7 @@ vi.mock('./openshell-install.js', async (original) => {
     },
   };
 });
-// Deterministic ports: everything is free.
-vi.mock('./lib/openshell-relay-port.js', async (original) => {
-  const real = await original<typeof import('./lib/openshell-relay-port.js')>();
-  return {
-    ...real,
-    selectRelayPort: (existing: Record<string, string | undefined>, slug: string) =>
-      real.selectRelayPort(existing, slug, async () => 'free'),
-  };
-});
-
-import { candidateRelayPort } from './lib/openshell-relay-port.js';
 import { OPENSHELL_POLICY_DEFAULTS, parseOpenShellArgs, planOpenShellEnv, run } from './openshell.js';
-import { getInstallSlug } from '../src/install-slug.js';
 
 let root: string;
 let previous: string;
@@ -96,11 +84,10 @@ afterEach(() => {
 });
 
 describe('planOpenShellEnv', () => {
-  it('selects the openshell driver, resolves the CLI, fills policy defaults, and writes the port pair', () => {
+  it('selects the openshell driver, resolves the CLI, and fills policy defaults', () => {
     const plan = planOpenShellEnv(
       { enable: true, bin: 'openshell', gateway: 'lab' },
       {},
-      23456,
       () => '/usr/local/bin/openshell',
     );
     expect(plan).toEqual({
@@ -109,37 +96,19 @@ describe('planOpenShellEnv', () => {
         OPENSHELL_BIN: '/usr/local/bin/openshell',
         OPENSHELL_GATEWAY: 'lab',
         ...OPENSHELL_POLICY_DEFAULTS,
-        NANOCLAW_OPENSHELL_MODEL_RELAY_PORT: '23456',
-        NANOCLAW_OPENSHELL_GATEWAY_PORTS: '23456',
       },
       warnings: [],
     });
   });
 
-  it('always rewrites both port keys together, even over operator values', () => {
-    const plan = planOpenShellEnv(
-      { enable: true },
-      { NANOCLAW_OPENSHELL_GATEWAY_PORTS: '18790,9999', NANOCLAW_OPENSHELL_MODEL_RELAY_PORT: '18790' },
-      24000,
-      () => '/x/openshell',
-    );
-    expect(plan.writes.NANOCLAW_OPENSHELL_MODEL_RELAY_PORT).toBe('24000');
-    expect(plan.writes.NANOCLAW_OPENSHELL_GATEWAY_PORTS).toBe('24000');
-  });
-
-  it('never overwrites non-port policy settings the operator already chose', () => {
-    const plan = planOpenShellEnv(
-      { enable: true },
-      { NANOCLAW_OPENSHELL_BASE_RW: '/tmp' },
-      24000,
-      () => '/x/openshell',
-    );
+  it('never overwrites policy settings the operator already chose', () => {
+    const plan = planOpenShellEnv({ enable: true }, { NANOCLAW_OPENSHELL_BASE_RW: '/tmp' }, () => '/x/openshell');
     expect(plan.writes.NANOCLAW_OPENSHELL_BASE_RW).toBeUndefined();
     expect(plan.writes.NANOCLAW_OPENSHELL_BASE_RO).toBe(OPENSHELL_POLICY_DEFAULTS.NANOCLAW_OPENSHELL_BASE_RO);
   });
 
   it('keeps an unresolvable CLI path as entered, with a warning', () => {
-    const plan = planOpenShellEnv({ enable: true, bin: '/opt/missing/openshell' }, {}, 24000, () => undefined);
+    const plan = planOpenShellEnv({ enable: true, bin: '/opt/missing/openshell' }, {}, () => undefined);
     expect(plan.writes.OPENSHELL_BIN).toBe('/opt/missing/openshell');
     expect(plan.warnings.join()).toMatch(/not found/);
   });
@@ -168,22 +137,21 @@ describe('setup --step openshell', () => {
     expect(docker.builds).toEqual([]);
   });
 
-  it('--enable writes the driver settings, an install-specific relay port pair, and installs the gateway', async () => {
+  it('--enable writes the driver settings and installs the gateway', async () => {
     await run(['--enable', '--bin', '/opt/openshell/bin/openshell']);
     expect(envValue('NANOCLAW_RUNTIME_DRIVER')).toBe('openshell');
     expect(envValue('OPENSHELL_BIN')).toBe('/opt/openshell/bin/openshell');
-    const port = envValue('NANOCLAW_OPENSHELL_MODEL_RELAY_PORT');
-    expect(port).toBe(String(candidateRelayPort(getInstallSlug(root))));
-    expect(envValue('NANOCLAW_OPENSHELL_GATEWAY_PORTS')).toBe(port);
-    expect(port).not.toBe('18790');
     expect(installGateway).toHaveBeenCalledWith('openshell');
   });
 
-  it('migrates a legacy fixed 18790 egress setting to this install’s own port pair', async () => {
-    fs.writeFileSync(envFile(), 'NANOCLAW_OPENSHELL_GATEWAY_PORTS=18790\n');
+  it('removes the former model relay settings from .env', async () => {
+    fs.writeFileSync(
+      envFile(),
+      'KEEP=1\nNANOCLAW_OPENSHELL_MODEL_RELAY_PORT=23456\nNANOCLAW_OPENSHELL_GATEWAY_PORTS=23456\nNANOCLAW_OPENSHELL_GATEWAY_HOST=h\n',
+    );
     await run(['--enable', '--no-gateway']);
-    expect(envValue('NANOCLAW_OPENSHELL_GATEWAY_PORTS')).toBe(envValue('NANOCLAW_OPENSHELL_MODEL_RELAY_PORT'));
-    expect(envValue('NANOCLAW_OPENSHELL_GATEWAY_PORTS')).not.toBe('18790');
+    expect(readEnv()).not.toMatch(/MODEL_RELAY_PORT|GATEWAY_PORTS|GATEWAY_HOST/);
+    expect(envValue('KEEP')).toBe('1');
   });
 
   it('derives the :openshell image right away when the base image already exists', async () => {
