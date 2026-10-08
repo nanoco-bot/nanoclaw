@@ -1,8 +1,8 @@
 /**
  * Host-side configuration for everything OpenShell in this tree: the session
- * driver (`register.ts`) and the `ncl openshell-policy-*` commands both build
- * their `openshell` CLI here, so they always talk to the same binary and the
- * same gateway.
+ * driver (`register.ts`) and the credential gateway both build their
+ * `openshell` CLI here, so they always talk to the same binary and the same
+ * gateway.
  *
  * Precedence: `process.env` wins, then `.env` — the same rule
  * `drivers/index.ts#readSetting` applies to NANOCLAW_RUNTIME_DRIVER. The host

@@ -141,10 +141,16 @@ describe('enable / disable', () => {
     expect(calls).toEqual([['disable', '--now', d.loc.unit], ['daemon-reload']]);
   });
 
-  it('opt-in: unanswered without a TTY declines and writes nothing', async () => {
-    await run([]);
+  it('without --enable or --disable it prints usage, exits 2 and writes nothing', async () => {
+    const exit = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
+      throw new Error(`exit ${code}`);
+    }) as never);
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    await expect(run([])).rejects.toThrow('exit 2');
+    expect(error).toHaveBeenCalledWith(expect.stringContaining('--enable [--port N] | --disable'));
     expect(fs.existsSync(path.join(root, '.env'))).toBe(false);
-    expect(console.log).toHaveBeenCalledWith(expect.stringContaining('STATUS: skipped'));
+    exit.mockRestore();
+    error.mockRestore();
   });
 });
 

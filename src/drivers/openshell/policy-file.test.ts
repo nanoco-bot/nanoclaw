@@ -1,6 +1,6 @@
 /**
  * The operator's policy file: per-group providers and network rules, read by
- * the driver for every new sandbox and edited by the setup console.
+ * the driver for every new sandbox and edited by the console.
  */
 import fs from 'node:fs';
 import os from 'node:os';

@@ -252,6 +252,11 @@ describe('gatewayConfigRemedy', () => {
     expect(gatewayConfigRemedy('linux')).toContain('systemctl --user restart openshell-gateway');
     expect(gatewayConfigRemedy('macos')).toContain('brew services restart nvidia/openshell/openshell');
   });
+
+  it('on macOS names the Homebrew config the service reads while ~/.config has none', () => {
+    expect(gatewayConfigRemedy('macos')).toContain('$(brew --prefix)/var/openshell/gateway.toml');
+    expect(gatewayConfigRemedy('linux')).not.toContain('brew');
+  });
 });
 
 describe('ensureOpenShellRuntime (the install step’s checks)', () => {

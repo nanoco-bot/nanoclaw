@@ -199,7 +199,8 @@ Five types of skills. See [CONTRIBUTING.md](CONTRIBUTING.md) for the full taxono
 | `/customize` | Adding channels, integrations, behavior changes |
 | `/debug` | Container issues, logs, troubleshooting |
 | `/update-nanoclaw` | Bring upstream updates into a customized install |
-| `/add-onecli`, `/add-iron-proxy` | Install or refresh this copy's credential gateway |
+| `/add-onecli`, `/add-iron-proxy`, `/add-openshell` | Install or refresh this copy's credential gateway |
+| `/add-openshell-console` | Optional local web console for an OpenShell install |
 | `/migrate-memory` | Carry a group's agent memory across a provider switch (operator-run, both directions) |
 
 ## Contributing
@@ -301,6 +302,8 @@ This project uses pnpm with `minimumReleaseAge: 4320` (3 days) in `pnpm-workspac
 | [docs/skill-engine-seam.md](docs/skill-engine-seam.md) | Skill-engine consumer contract (wizard / pipeline / agent-relay) + boundary-rule rationale |
 | [docs/templates.md](docs/templates.md) | Agent templates: what they are, stamping via `ncl groups create --template` + the setup wizard, the gateway/MCP-credential model, supported providers, and how to contribute one |
 | [docs/hardened-image.md](docs/hardened-image.md) | Opt-in: pull the agent image from a registry instead of building it |
+| [docs/openshell.md](docs/openshell.md) | OpenShell sandboxing: architecture, security model, policy file, settings, limitations |
+| [docs/openshell-operations.md](docs/openshell-operations.md) | OpenShell install, gateway config, daily tasks, console, logs, troubleshooting, removal |
 
 ## Container Build Cache
 

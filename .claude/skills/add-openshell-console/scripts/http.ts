@@ -1,5 +1,5 @@
 /**
- * HTTP plumbing for the setup console: JSON responses, JSON-only request
+ * HTTP plumbing for the console: JSON responses, JSON-only request
  * bodies (a CSRF backstop — a cross-site form cannot send application/json
  * without a preflight this server never grants), and secret scrubbing.
  */

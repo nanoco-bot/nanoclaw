@@ -16,16 +16,15 @@
  * setup/peer-cleanup.ts treats such units as peer NanoClaw installs.
  *
  * The server binds 127.0.0.1 (NANOCLAW_OPENSHELL_UI_HOST to change) and has
- * no login of its own: reach it over an SSH tunnel or a password-gated proxy.
+ * no login of its own: reach it over an SSH tunnel, or through a password-gated
+ * proxy whose host is listed in NANOCLAW_OPENSHELL_UI_ALLOWED_HOSTS.
  */
 import { execFileSync } from 'child_process';
 import fs from 'fs';
 import net from 'net';
 import os from 'os';
 import path from 'path';
-import { pathToFileURL } from 'url';
-
-import * as p from '@clack/prompts';
+import { fileURLToPath, pathToFileURL } from 'url';
 
 import { readEnvFile } from '../../../../src/env.js';
 import { getInstallSlug } from '../../../../src/install-slug.js';
@@ -427,35 +426,18 @@ export function serviceStatusFields(loc: UiServiceLocation): Record<string, stri
     : { SERVICE_TYPE: loc.root ? 'systemd-system' : 'systemd-user', UNIT: loc.unit, UNIT_PATH: loc.unitPath };
 }
 
-/**
- * The interactive question for a bare `--step openshell-ui` (default: no). The
- * setup wizard does not ask: it starts the UI whenever OpenShell is enabled.
- */
-export async function askOpenShellUi(): Promise<boolean> {
-  const answer = await p.confirm({
-    message:
-      'Start the OpenShell setup web UI? (manage providers, approve egress-policy proposals, replace the Claude ' +
-      `credential later; runs in the background on port ${DEFAULT_UI_PORT} by default, with no login of its own)`,
-    initialValue: false,
-  });
-  return !p.isCancel(answer) && answer === true;
-}
-
 export async function run(args: string[]): Promise<void> {
   const projectRoot = process.cwd();
   const parsed = parseUiArgs(args);
-  let enable = parsed.enable;
-  if (enable === undefined) {
-    enable = process.stdin.isTTY ? await askOpenShellUi() : false; // non-interactive and unasked: no
+  if (parsed.enable === undefined) {
+    console.error(
+      `Usage: pnpm exec tsx ${path.relative(projectRoot, fileURLToPath(import.meta.url))} --enable [--port N] | --disable`,
+    );
+    process.exit(2);
   }
-
-  if (!enable) {
-    if (parsed.enable === false) {
-      const { loc, removed } = disableUi(projectRoot);
-      emitStatus('OPENSHELL_UI', { STATUS: 'success', ENABLED: false, ...serviceStatusFields(loc), REMOVED: removed });
-    } else {
-      emitStatus('OPENSHELL_UI', { STATUS: 'skipped', ENABLED: false });
-    }
+  if (!parsed.enable) {
+    const { loc, removed } = disableUi(projectRoot);
+    emitStatus('OPENSHELL_UI', { STATUS: 'success', ENABLED: false, ...serviceStatusFields(loc), REMOVED: removed });
     return;
   }
 

@@ -10,7 +10,7 @@
  * the credential.
  *
  * No approval holds: OpenShell enforces allow and deny itself, and its blocked
- * requests are reviewed with `openshell rule` (or the setup console), not
+ * requests are reviewed with `openshell rule` (or the console), not
  * through NanoClaw's approval cards.
  */
 import { INSTALL_SLUG } from '../config.js';
