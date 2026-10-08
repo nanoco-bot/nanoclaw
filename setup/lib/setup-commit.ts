@@ -13,7 +13,7 @@ import { join } from 'node:path';
 
 import * as p from '@clack/prompts';
 
-import { isUpgradeCurrent, writeUpgradeState } from '../../src/upgrade-state.js';
+import { currentUpgradeState, writeUpgradeState } from '../../src/upgrade-state.js';
 
 /** Dirty path → fingerprint of its working-tree entry (type, mode, content), or '-' when absent. */
 export type TreeSnapshot = Map<string, string>;
@@ -78,6 +78,7 @@ export function commitSetupChanges(root: string, before: TreeSnapshot | null, me
   if (!before) return { committed: [] };
   let changed: string[] = [];
   let missing: ReturnType<typeof missingIdentity> = [];
+  let marker: ReturnType<typeof currentUpgradeState> = null;
   try {
     const after = snapshotTree(root);
     if (!after) return { committed: [] };
@@ -85,6 +86,7 @@ export function commitSetupChanges(root: string, before: TreeSnapshot | null, me
     if (!changed.length) return { committed: [] };
     const spec = `${changed.join('\0')}\0`;
     missing = missingIdentity(root);
+    marker = currentUpgradeState(root);
     // Machine-made local commits: no hooks, no signing prompt mid-setup.
     const quiet = ['-c', 'core.hooksPath=/dev/null', '-c', 'commit.gpgSign=false'];
     const identity = missing.flatMap(([key, value]) => ['-c', `${key}=${value}`]);
@@ -122,48 +124,28 @@ export function commitSetupChanges(root: string, before: TreeSnapshot | null, me
       error: `Committed setup's files, but couldn't save a Git identity (${reason(err)}). Set user.name and user.email in this checkout before updating.`,
     };
   }
+  // The startup tripwire binds the marker to the exact HEAD, which this commit
+  // just moved. A marker that matched the old HEAD is rewritten for the new
+  // one; one that already mismatched (raw pull, foreign commit) stays stale,
+  // so the host still stops.
+  if (marker) {
+    try {
+      writeUpgradeState({ via: marker.via, channel: marker.channel, ref: marker.ref, projectRoot: root });
+    } catch (err) {
+      return {
+        committed: changed,
+        error:
+          `Committed setup's files, but couldn't update the upgrade marker (${reason(err)}). ` +
+          'Run `pnpm exec tsx scripts/upgrade-state.ts set` before restarting NanoClaw.',
+      };
+    }
+  }
   return { committed: changed };
 }
 
 function reason(err: unknown): string {
   const stderr = (err as { stderr?: string }).stderr?.trim();
   return stderr || (err instanceof Error ? err.message : String(err));
-}
-
-function upgradeCurrent(root: string): boolean {
-  try {
-    return isUpgradeCurrent(root);
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Setup's own `setup: apply <skill>` commit moves HEAD, and the startup
- * tripwire compares the upgrade marker against HEAD — so a channel skill
- * applied after the service step (pairing, init-first-agent) made the very
- * next restart refuse to boot. When the marker matched the checkout right
- * before this commit, the commit is setup's own sanctioned work: re-stamp.
- * A checkout that was NOT sanctioned before stays unsanctioned; no marker is
- * created where none existed (the service step stamps the first one).
- */
-export function restampAfterSetupCommit(
-  root: string,
-  sanctionedBefore: boolean,
-  label: string,
-  onError: (error: string) => void = () => {},
-): boolean {
-  if (!sanctionedBefore) return false;
-  try {
-    writeUpgradeState({ via: `setup: apply ${label}`, projectRoot: root });
-    return true;
-  } catch (err) {
-    onError(
-      `Committed ${label}, but couldn't update the upgrade marker (${reason(err)}); ` +
-        'the next restart will stop at the upgrade check. See docs/upgrade-recovery.md.',
-    );
-    return false;
-  }
 }
 
 /** Run one skill apply and commit its changes, even when the apply throws. */
@@ -182,15 +164,11 @@ export async function withSetupCommit<T>(
   } catch (err) {
     onError(`Couldn't check which files setup changes (${reason(err)}); commit them yourself before updating.`);
   }
-  // Was this checkout on the sanctioned path right before setup's own commit?
-  // Only then is it carried across that commit (see restampAfterSetupCommit).
-  const sanctionedBefore = upgradeCurrent(root);
   try {
     return await apply();
   } finally {
     const result = commitSetupChanges(root, before, `setup: apply ${label}`);
     if (result.error) onError(result.error);
-    if (result.committed.length > 0) restampAfterSetupCommit(root, sanctionedBefore, label, onError);
   }
 }
 
