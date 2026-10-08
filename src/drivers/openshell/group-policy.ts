@@ -12,7 +12,7 @@
  * File shape (NANOCLAW_OPENSHELL_POLICY_FILE, JSON):
  *   { "default": PolicyOptions, "groups": { "<folder>": PolicyOptions } }
  */
-import { GROUP_FOLDER_LABEL, type SessionSpec } from './seam.js';
+import { GROUP_FOLDER_LABEL, type SessionSpec } from '../types.js';
 import type { EgressRule, PolicyOptions } from './policy.js';
 
 export interface PolicyConfig {

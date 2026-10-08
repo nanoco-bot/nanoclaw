@@ -9,7 +9,7 @@ import { parse as parseYaml } from 'yaml';
 import { FIXTURE_POLICY, fixtureSpec, fixtureSpecWithAux } from '../spec-fixture.js';
 import { LABELS, type SessionEvent, type SessionKey } from '../types.js';
 import { OpenShellSessionDriver, diffSnapshots } from './driver.js';
-import { cliErrorSummary, normalizeOpenShellError, sandboxName } from './realize.js';
+import { cliErrorSummary, isNotFound, normalizeOpenShellError, sandboxName } from './realize.js';
 import { FakeOpenShellCli, listJson, quietLogger, sandboxJson } from './fake-cli.js';
 
 const KEY: SessionKey = { installSlug: 'spike', agentGroupId: 'g1', sessionId: 's1' };
@@ -216,6 +216,32 @@ describe('start()', () => {
     const handle = await driver.prepare(fixtureSpec());
     await expect(handle.start()).rejects.toThrow();
     expect(cli.callsMatching(/^sandbox delete/)).toEqual([]);
+    // The host then stops the failed handle; the winner's sandbox must survive that too.
+    await handle.stop('start-failed');
+    expect(cli.callsMatching(/^sandbox delete/)).toEqual([]);
+  });
+});
+
+describe('isNotFound: only a missing SANDBOX reads as "gone"', () => {
+  it.each([
+    'Error:   × code: \'Some requested entity was not found\', message: "sandbox not found"',
+    `sandbox '${NAME}' not found`,
+  ])('sandbox missing: %s', (msg) => expect(isNotFound(new Error(msg))).toBe(true));
+
+  it.each([
+    "Error:   × provider 'granola' not found",
+    'Error:   × image not found: nanoclaw-agent:openshell',
+    "Error:   × Unknown gateway 'bogusgw'.",
+    "Error:   × code: 'Some requested entity was not found', message: \"provider profile 'x' not found\"",
+  ])('configuration error, not a gone sandbox: %s', (msg) => expect(isNotFound(new Error(msg))).toBe(false));
+
+  it('status() surfaces a misconfiguration instead of reporting the session stopped', async () => {
+    const { driver } = setup([
+      { match: /^sandbox get /, fails: NOT_FOUND, times: 1 },
+      { match: /^sandbox get /, fails: "Error:   × provider 'granola' not found" },
+    ]);
+    const handle = await driver.prepare(fixtureSpec());
+    await expect(handle.status()).rejects.toThrow();
   });
 });
 

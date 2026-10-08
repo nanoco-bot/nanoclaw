@@ -25,7 +25,7 @@ import {
   type MountClass,
   type MountSpec,
   type SessionSpec,
-} from './seam.js';
+} from '../types.js';
 
 /** The base-system grant verified to let binaries exec inside a v0.1.2 sandbox. */
 export const DEFAULT_BASE_READ_ONLY: readonly string[] = ['/usr', '/bin', '/lib', '/lib64', '/etc'];
@@ -132,7 +132,7 @@ export type PolicyAccess = 'read_only' | 'read_write';
 
 /**
  * MountClass -> filesystem_policy list. Exhaustive on purpose: a new class in
- * the vendored union fails typecheck here instead of being silently realized.
+ * the MountClass union fails typecheck here instead of being silently realized.
  *
  * - group-state: the session mailbox DBs / group folder. Its declared mode is
  *   honored — rw is the IPC channel; ro is a legitimate read-only view over

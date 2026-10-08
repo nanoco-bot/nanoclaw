@@ -21,7 +21,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { specInvalid, type MountClass, type SessionSpec } from './seam.js';
+import { specInvalid, type MountClass, type SessionSpec } from '../types.js';
 
 export type Lstat = (p: string) => Pick<fs.Stats, 'isSymbolicLink'>;
 

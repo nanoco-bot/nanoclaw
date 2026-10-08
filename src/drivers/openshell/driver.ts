@@ -2,7 +2,7 @@
  * OpenShellSessionDriver — NanoClaw's SessionDriver realized as NVIDIA OpenShell
  * sandboxes (Docker compute driver), via the `openshell` CLI.
  *
- * Structure mirrors the shipped DockerSessionDriver (vendor/nanoclaw/src/drivers/docker-driver.ts):
+ * Structure mirrors DockerSessionDriver (../docker-driver.ts):
  * capabilities / ensureReady / prepare (validate, build realization,
  * idempotency, rollback) / listSessions / watchSessions / reapResidue.
  *
@@ -60,7 +60,6 @@ import {
   LABELS,
   asFailureError,
   isGatewayOwned,
-  log as seamLog,
   specInvalid,
   validateSpec,
   type DriverCapabilities,
@@ -76,7 +75,8 @@ import {
   type SessionSpec,
   type SessionStatus,
   type SessionWatch,
-} from './seam.js';
+} from '../types.js';
+import { log as hostLog } from '../../log.js';
 
 export interface Logger {
   debug(msg: string, ctx?: Record<string, unknown>): void;
@@ -126,7 +126,7 @@ export interface OpenShellDriverOptions extends MountPolicy {
 }
 
 /**
- * The vendored DriverCapabilities plus one honesty field core does not read
+ * DriverCapabilities plus one honesty field core does not read
  * but does log at boot (`Session runtime driver selected`): how watchSessions
  * learns about changes. Features gate on capabilities, never on driver kind —
  * so the limitation is declared here rather than left for someone to infer
@@ -183,7 +183,7 @@ export class OpenShellSessionDriver implements SessionDriver {
       gatewayTrustRoot: opts.gatewayTrustRoot,
     };
     this.#cli = opts.cli ?? realOpenShellCli();
-    this.#log = opts.logger ?? seamLog;
+    this.#log = opts.logger ?? hostLog;
   }
 
   capabilities(): OpenShellCapabilities {
@@ -192,9 +192,9 @@ export class OpenShellSessionDriver implements SessionDriver {
       // driver; this realization does not target it.)
       isolationTiers: ['container'],
       // Mount pinning is enforced host-side in code (validateSpec), exactly as
-      // on Docker. The gateway's own resource_admission is disabled in the POC
-      // deployment, so nothing out-of-process re-checks mounts. Do not flip
-      // this until label-based admission is configured AND verified.
+      // on Docker. NanoClaw's sandboxes need the OpenShell gateway's
+      // resource_admission off, so nothing out-of-process re-checks mounts. Do
+      // not flip this until label-based admission is configured and verified.
       admissionEnforced: false,
       // OpenShell enforces egress by policy (network_policies, default deny),
       // not by network topology.
@@ -502,6 +502,7 @@ export function diffSnapshots(
 class OpenShellHandle implements SessionHandle {
   #started = false;
   #stopping = false;
+  #lostCreateRace = false;
 
   constructor(
     readonly key: SessionKey,
@@ -534,7 +535,9 @@ class OpenShellHandle implements SessionHandle {
       // Except "already exists": that sandbox is NOT ours to roll back — it is
       // a concurrent prepare/start of the same key, and deleting it would kill
       // a live session.
-      if (!isAlreadyExists(err)) {
+      if (isAlreadyExists(err)) {
+        this.#lostCreateRace = true;
+      } else {
         try {
           await this.cli.run(['sandbox', 'delete', this.name]);
         } catch {
@@ -570,6 +573,9 @@ class OpenShellHandle implements SessionHandle {
    */
   async stop(reason: string): Promise<void> {
     this.#stopping = true;
+    // The host stops a handle whose start failed. When the failure was losing
+    // the create race, the sandbox at this name is the winner's: leave it.
+    if (this.#lostCreateRace) return;
     this.log.info('Stopping OpenShell sandbox', { name: this.name, reason });
     try {
       await this.cli.run(['sandbox', 'delete', this.name]);

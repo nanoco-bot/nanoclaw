@@ -20,7 +20,7 @@ import { realOpenShellCli } from './cli.js';
 import { openShellGatewayEnv, openShellSettingsEnv } from './config.js';
 import { OpenShellSessionDriver } from './driver.js';
 import type { EgressRule } from './policy.js';
-import { registerSessionDriver } from './seam.js';
+import { registerSessionDriver } from '../driver-registry.js';
 import { settingsFromEnv } from './settings.js';
 
 export const OPENSHELL_DRIVER_KIND = 'openshell';

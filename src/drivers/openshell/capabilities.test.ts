@@ -12,7 +12,7 @@ describe('capabilities() is honest', () => {
   it('declares exactly what this realization can and cannot do', () => {
     expect(driver().capabilities()).toEqual({
       isolationTiers: ['container'],
-      admissionEnforced: false, // gateway resource_admission is disabled in the POC deployment
+      admissionEnforced: false, // NanoClaw runs with the gateway's resource_admission off
       networkPolicy: 'declarative',
       encryptedVolumes: false,
       unrealized: ['pidsLimit', 'shmSizeMb'],
@@ -23,7 +23,7 @@ describe('capabilities() is honest', () => {
     });
   });
 
-  it('is assignable to the vendored DriverCapabilities contract', () => {
+  it('is assignable to the DriverCapabilities contract', () => {
     const caps: DriverCapabilities = driver().capabilities();
     expect(caps.admissionEnforced).toBe(false);
   });

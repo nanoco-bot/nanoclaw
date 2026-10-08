@@ -13,8 +13,7 @@ import { settingsFromEnv } from './settings.js';
 
 /**
  * Per-group policy file in the shape operators write to
- * NANOCLAW_OPENSHELL_POLICY_FILE (ported from the POC's demo file, minus its
- * demo-only service names): every agent reaches the model relay, only `alice`
+ * NANOCLAW_OPENSHELL_POLICY_FILE: every agent reaches the model relay, only `alice`
  * gets an extra egress rule.
  */
 const SAMPLE_POLICY_FILE = {
