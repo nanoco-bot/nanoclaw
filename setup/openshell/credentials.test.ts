@@ -4,7 +4,7 @@ import path from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { checkCredentials } from './verify.js';
+import { openShellCredentials } from './verify.js';
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -22,7 +22,7 @@ function install(env: string): string {
 describe('verify: credentials for the OpenShell gateway', () => {
   it('a gateway name in .env is NOT a credential: missing until OpenShell holds the provider', () => {
     const root = install('NANOCLAW_GATEWAY_PROVIDER=openshell\n');
-    expect(checkCredentials(root, () => null)).toEqual({
+    expect(openShellCredentials(root, () => null)).toEqual({
       credentials: 'missing',
       credentialSource: 'openshell-provider:none',
     });
@@ -30,7 +30,7 @@ describe('verify: credentials for the OpenShell gateway', () => {
 
   it('configured when OpenShell holds the provider', () => {
     const root = install('NANOCLAW_GATEWAY_PROVIDER=openshell\n');
-    expect(checkCredentials(root, () => 'oauth')).toEqual({
+    expect(openShellCredentials(root, () => 'oauth')).toEqual({
       credentials: 'configured',
       credentialSource: 'openshell-provider:oauth',
     });
@@ -38,13 +38,13 @@ describe('verify: credentials for the OpenShell gateway', () => {
 
   it('a key left in .env does not count for OpenShell', () => {
     const root = install('NANOCLAW_GATEWAY_PROVIDER=openshell\nANTHROPIC_API_KEY=sk-ant-api03-x\n');
-    expect(checkCredentials(root, () => null).credentials).toBe('missing');
+    expect(openShellCredentials(root, () => null)?.credentials).toBe('missing');
   });
 
-  it('other gateways keep the existing .env check', () => {
+  it('is null on another gateway, without asking OpenShell', () => {
     const root = install('NANOCLAW_GATEWAY_PROVIDER=onecli\n');
     const inspect = vi.fn(() => null);
-    expect(checkCredentials(root, inspect)).toEqual({ credentials: 'configured', credentialSource: '' });
+    expect(openShellCredentials(root, inspect)).toBeNull();
     expect(inspect).not.toHaveBeenCalled();
   });
 });

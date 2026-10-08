@@ -21,7 +21,7 @@ import {
   readPolicyFile,
   removeGroupEgressRule,
   removeGroupProvider,
-} from '../../../../../src/drivers/openshell/policy-file.js';
+} from '../../../../src/drivers/openshell/policy-file.js';
 import { appendActivity, readActivity, type ActivityRecord } from './activity.js';
 import { sandboxCandidates, type GroupSummary, type SessionSummary } from './group-view.js';
 import { HttpError, input, readJson, scrub, send } from './http.js';
@@ -76,6 +76,8 @@ export interface UiDeps {
   policyFile: string;
   /** The console's activity log. */
   activityLog: string;
+  /** Host names besides localhost the console answers to (a proxy's), lowercase. */
+  allowedHosts?: readonly string[];
   staticDir: string;
   now?: () => Date;
 }
@@ -85,6 +87,35 @@ const STATIC: Record<string, { file: string; type: string }> = {
   '/index.html': { file: 'index.html', type: 'text/html; charset=utf-8' },
   '/app.js': { file: 'app.js', type: 'text/javascript; charset=utf-8' },
 };
+
+const LOCAL_HOSTS = new Set(['127.0.0.1', 'localhost', '::1']);
+
+/** The request's host name, without port or IPv6 brackets. */
+function hostName(header: string | undefined): string {
+  const h = String(header ?? '').toLowerCase();
+  return h.startsWith('[') ? h.slice(1, h.indexOf(']')) : h.replace(/:\d+$/, '');
+}
+
+/**
+ * DNS rebinding and cross-site requests: the Host must be local or allowed,
+ * and a browser's Origin, when sent, must be that same host.
+ */
+function refusedRequest(req: IncomingMessage, allowed: ReadonlySet<string>): string | undefined {
+  const host = hostName(req.headers.host);
+  if (!LOCAL_HOSTS.has(host) && !allowed.has(host))
+    return `host '${host}' is not allowed; add it to NANOCLAW_OPENSHELL_UI_ALLOWED_HOSTS`;
+  const origin = req.headers.origin;
+  if (origin && req.method !== 'GET') {
+    let originHost = '';
+    try {
+      originHost = new URL(origin).host.toLowerCase();
+    } catch {
+      return 'bad Origin';
+    }
+    if (originHost !== String(req.headers.host ?? '').toLowerCase()) return 'cross-origin requests are refused';
+  }
+  return undefined;
+}
 
 const CSP = "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'none'";
 
@@ -457,8 +488,11 @@ export function createHandler(deps: UiDeps): (req: IncomingMessage, res: ServerR
     throw new HttpError(404, 'Not found');
   }
 
+  const allowed = new Set((deps.allowedHosts ?? []).map((h) => h.toLowerCase()));
   return async (req, res) => {
     try {
+      const refused = refusedRequest(req, allowed);
+      if (refused) throw new HttpError(403, refused);
       await route(req, res);
     } catch (err) {
       const status = err instanceof HttpError ? err.status : 500;

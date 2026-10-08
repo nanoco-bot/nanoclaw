@@ -21,7 +21,7 @@ import {
   supervisorImageRef,
   type Run,
   type RunResult,
-} from './openshell-runtime.js';
+} from './runtime.js';
 
 const ok = (stdout = ''): RunResult => ({ code: 0, stdout, stderr: '' });
 const err = (stderr: string, code = 1): RunResult => ({ code, stdout: '', stderr });

@@ -21,7 +21,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { specInvalid, type MountClass, type SessionSpec } from '../types.js';
+import { deniedByPolicy, specInvalid, type MountClass, type SessionSpec } from '../types.js';
 
 export type Lstat = (p: string) => Pick<fs.Stats, 'isSymbolicLink'>;
 
@@ -95,9 +95,25 @@ export function assertContainerTarget(mount: { class: MountClass; containerPath:
 }
 
 /** prepare()'s filesystem pass over every mount of every container. */
+/**
+ * Unicode control (Cc), format (Cf, incl. bidi overrides and zero-width
+ * joiners), line and paragraph separators: never part of a real path, and each
+ * can make the path a human reads differ from the path used. Adapted from
+ * NVIDIA/NemoClaw's `hasUnsafeHostMountTerminalText` (Apache-2.0).
+ */
+const UNSAFE_TERMINAL_TEXT = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u;
+
+export function hasUnsafeTerminalText(value: string): boolean {
+  return UNSAFE_TERMINAL_TEXT.test(value);
+}
+
 export function assertHostMounts(spec: SessionSpec, lstat: Lstat = fs.lstatSync): void {
   for (const container of spec.containers) {
     for (const mount of container.mounts) {
+      // Before anything echoes the path; the path itself is not printed.
+      if (hasUnsafeTerminalText(mount.hostPath) || hasUnsafeTerminalText(mount.containerPath)) {
+        throw deniedByPolicy(`mount on ${container.role} has control or format characters in its path`);
+      }
       assertNoSymlinkComponents(mount.hostPath, lstat);
       assertContainerTarget(mount);
     }

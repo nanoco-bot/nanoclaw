@@ -17,7 +17,7 @@
 #
 # When OpenShell's gateway first starts it pulls its supervisor and sandbox
 # runtime images (ghcr.io/nvidia/openshell/{supervisor,sandbox}:<version>)
-# before it accepts connections. setup/openshell-install.ts checks the result.
+# before it accepts connections. setup/openshell/install-step.ts checks the result.
 #
 # Version: OPENSHELL_VERSION from the environment when set (passed straight
 # through to the installer, which also accepts `dev` and `pre`), otherwise the
@@ -43,7 +43,7 @@ fail() {
 # The "openshell" pin in versions.json, or nothing.
 read_pin() {
   local versions_file
-  versions_file="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/versions.json"
+  versions_file="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/versions.json"
   tr -d '\n' <"$versions_file" 2>/dev/null |
     grep -o '"openshell"[[:space:]]*:[[:space:]]*"[^"]*"' |
     head -n1 | sed 's/.*:[[:space:]]*"//; s/"$//' || true

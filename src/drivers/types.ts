@@ -459,12 +459,6 @@ export function validateSpec(spec: SessionSpec, policy: MountPolicy, capabilitie
   for (const container of spec.containers) {
     const seenTargets = new Set<string>();
     for (const mount of container.mounts) {
-      if (hasUnsafeTerminalText(mount.hostPath) || hasUnsafeTerminalText(mount.containerPath)) {
-        // Before anything echoes the path: a bidi override or line separator
-        // makes the mount a log line, a status block or an approval card shows
-        // different from the one realized. The path itself is not printed.
-        throw deniedByPolicy(`mount on ${container.role} has control or format characters in its path`);
-      }
       if (!hostPathCanonical(mount.hostPath)) {
         // Every class rule below is a prefix check against a trusted root, and
         // a prefix check reads `materialsRoot/../outside` as inside — the
@@ -473,8 +467,7 @@ export function validateSpec(spec: SessionSpec, policy: MountPolicy, capabilitie
         // judge the same path the runtime mounts. (A relative source would not
         // even be a bind: Docker reads it as a named volume.) Symlinks remain
         // beyond a lexical check — that is what `admissionEnforced`
-        // realizations are for, and the OpenShell driver also walks every
-        // source component with lstat (openshell/host-mount.ts).
+        // realizations are for.
         throw deniedByPolicy(
           `mount ${mount.hostPath} must be a canonical absolute path (no '..', '.', '//', or trailing '/')`,
         );
@@ -540,22 +533,9 @@ export function validateSpec(spec: SessionSpec, policy: MountPolicy, capabilitie
  * path the runtime mounts, and a trusted root cannot be escaped lexically.
  */
 function hostPathCanonical(hostPath: string): boolean {
-  if (hasUnsafeTerminalText(hostPath)) return false;
   if (!hostPath.startsWith('/')) return false;
   const segments = hostPath.split('/').slice(1);
   return segments.every((segment) => segment !== '' && segment !== '.' && segment !== '..');
-}
-
-/**
- * Unicode control (Cc), format (Cf — incl. bidi overrides and zero-width
- * joiners), line- and paragraph-separator characters: never part of a real
- * path, and each can make the path a human reads differ from the path used.
- * Borrowed from NVIDIA/NemoClaw's `hasUnsafeHostMountTerminalText` (Apache-2.0).
- */
-const UNSAFE_TERMINAL_TEXT = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u;
-
-export function hasUnsafeTerminalText(value: string): boolean {
-  return UNSAFE_TERMINAL_TEXT.test(value);
 }
 
 /**

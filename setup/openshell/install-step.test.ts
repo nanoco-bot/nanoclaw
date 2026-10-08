@@ -11,10 +11,10 @@ import path from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('../src/log.js', () => ({ log: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() } }));
+vi.mock('../../src/log.js', () => ({ log: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() } }));
 
-import type { EnsureOptions, EnsureResult } from './lib/openshell-runtime.js';
-import { installOpenShell, installStatusFields, oneLine, type ScriptResult } from './openshell-install.js';
+import type { EnsureOptions, EnsureResult } from './runtime.js';
+import { installOpenShell, installStatusFields, oneLine, type ScriptResult } from './install-step.js';
 
 const LINUX = { platform: 'linux', arch: 'x64' };
 const HEALTHY: EnsureResult = {

@@ -16,7 +16,12 @@ import { FIXTURE_POLICY, fixtureSpec } from '../spec-fixture.js';
 import { validateSpec, type ContainerSpec, type MountSpec } from '../types.js';
 import { OpenShellSessionDriver } from './driver.js';
 import { FakeOpenShellCli, quietLogger } from './fake-cli.js';
-import { assertContainerTarget, assertNoSymlinkComponents, PROTECTED_CONTAINER_ROOTS } from './host-mount.js';
+import {
+  assertContainerTarget,
+  assertHostMounts,
+  assertNoSymlinkComponents,
+  PROTECTED_CONTAINER_ROOTS,
+} from './host-mount.js';
 import {
   assertDriverConfigMatchesPolicy,
   assertPolicyPath,
@@ -167,22 +172,24 @@ describe('control / format characters in mount paths', () => {
   // U+202E RIGHT-TO-LEFT OVERRIDE, U+2028 LINE SEPARATOR, U+200B ZERO WIDTH SPACE, a raw newline.
   const bad = ['\u202e', '\u2028', '\u200b', '\n'];
 
-  it.each(bad)('validateSpec (shared by both drivers) refuses %j in a host path', (ch) => {
+  const noLinks = () => ({ isSymbolicLink: () => false });
+
+  it.each(bad)('the driver refuses %j in a host path', (ch) => {
     const spec = fixtureSpec();
     spec.containers[0].mounts[0].hostPath = `/install/data/v2-sessions/g1/s1${ch}x`;
-    expect(() => validateSpec(spec, FIXTURE_POLICY)).toThrow(/control or format characters/);
+    expect(() => assertHostMounts(spec, noLinks)).toThrow(/control or format characters/);
   });
 
-  it.each(bad)('validateSpec refuses %j in a container path', (ch) => {
+  it.each(bad)('the driver refuses %j in a container path', (ch) => {
     const spec = fixtureSpec();
     spec.containers[0].mounts[0].containerPath = `/work${ch}space`;
-    expect(() => validateSpec(spec, FIXTURE_POLICY)).toThrow(/control or format characters/);
+    expect(() => assertHostMounts(spec, noLinks)).toThrow(/control or format characters/);
   });
 
   it('the refusal does not echo the path (it would print the characters it refuses)', () => {
     const spec = fixtureSpec();
     spec.containers[0].mounts[0].hostPath = '/install/data/v2-sessions/g1/s1\u202eevil';
-    expect(() => validateSpec(spec, FIXTURE_POLICY)).toThrow(/^(?!.*\u202e).*$/s);
+    expect(() => assertHostMounts(spec, noLinks)).toThrow(/^(?!.*\u202e).*$/s);
   });
 
   it.each(bad)('assertPolicyPath refuses %j', (ch) => {

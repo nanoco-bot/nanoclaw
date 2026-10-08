@@ -72,10 +72,13 @@ vi.mock('./platform.js', async (original) => {
   return {
     ...real,
     getPlatform: () => fixture.platform ?? real.getPlatform(),
-    // A mocked Mac is an Apple silicon one: OpenShell refuses Intel Macs.
-    getArch: () => (fixture.platform === 'macos' ? 'arm64' : real.getArch()),
   };
 });
+// Whatever machine runs the tests, a mocked host can run OpenShell.
+vi.mock('./openshell/install-step.js', async (original) => ({
+  ...(await original<typeof import('./openshell/install-step.js')>()),
+  hostSupport: () => ({ ok: true }),
+}));
 vi.mock('./logs.js', () => ({ userInput: vi.fn() }));
 vi.mock('./lib/diagnostics.js', () => ({ emit: vi.fn() }));
 vi.mock('./lib/runner.js', async (original) => ({
@@ -95,8 +98,8 @@ vi.mock('./lib/runner.js', async (original) => ({
   },
 }));
 // Hermetic: never this checkout's own .env (NANOCLAW_SKIP=openshell reads it).
-vi.mock('./openshell.js', async (original) => ({
-  ...(await original<typeof import('./openshell.js')>()),
+vi.mock('./openshell/step.js', async (original) => ({
+  ...(await original<typeof import('./openshell/step.js')>()),
   readOpenShellEnv: () => ({}),
 }));
 // The OpenShell install step (windowed: it downloads); recorded like the quiet steps.
@@ -326,7 +329,7 @@ describe('setup wizard provider choice with OpenShell sandboxing', () => {
     expect(fixture.fail).toHaveBeenCalledWith(
       'auth',
       "NANOCLAW_AGENT_PROVIDER=opencode can't be used with OpenShell sandboxing.",
-      expect.stringMatching(/relays Claude credentials only/),
+      expect.stringMatching(/holds Claude credentials only/),
     );
     expect(fixture.brightSelect).not.toHaveBeenCalled();
     expect(fixture.runGatewayAuth).not.toHaveBeenCalled();

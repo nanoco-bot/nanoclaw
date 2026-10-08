@@ -1,33 +1,22 @@
 /**
- * Step: openshell-ui — the operator web UI for an OpenShell-backed install.
- * The setup wizard runs `--enable` at the very end whenever OpenShell is
- * enabled, without asking (NANOCLAW_SKIP=openshell-ui leaves it out).
+ * Installs the OpenShell console as a background service for this install.
  *
- *   pnpm exec tsx setup/index.ts --step openshell-ui                    # asks (TTY), default: no
- *   pnpm exec tsx setup/index.ts --step openshell-ui -- --enable [--port 8790]
- *   pnpm exec tsx setup/index.ts --step openshell-ui -- --disable
+ *   pnpm exec tsx .claude/skills/add-openshell-console/scripts/service.ts --enable [--port 8790]
+ *   pnpm exec tsx .claude/skills/add-openshell-console/scripts/service.ts --disable
  *
- * Unlike every other step, what this installs stays resident: a service
- * running `.claude/skills/add-openshell/scripts/ui/server.ts` under tsx. It is
- * installed the way setup/service.ts installs the NanoClaw service, per
- * platform:
- *   - macOS: a user LaunchAgent (`~/Library/LaunchAgents/<name>.plist`), then
- *     launchctl unload → load → kickstart, verified with `launchctl list`
- *     (setupLaunchd);
+ * What it installs stays resident: `server.ts` under tsx, per platform the way
+ * setup/service.ts installs the NanoClaw service:
+ *   - macOS: a user LaunchAgent, then launchctl unload → load → kickstart;
  *   - Linux with systemd: a user unit (system unit as root), then
- *     daemon-reload → enable → restart → is-active (setupSystemd).
- * service.ts's third branch, a nohup wrapper for Linux without systemd, is
- * not ported: a resident web UI with no supervisor would not survive a crash
- * or reboot, so the step refuses there and says so.
+ *     daemon-reload → enable → restart → is-active.
+ * Linux without systemd is refused: a resident web page with no supervisor
+ * would not survive a crash or reboot.
  *
- * The service name (unit name and launchd label) deliberately does NOT start
- * with `nanoclaw` / `com.nanoclaw`: setup/peer-cleanup.ts treats every other
- * such unit/plist as a peer NanoClaw install and disables ones it judges
- * unhealthy.
+ * The service name does NOT start with `nanoclaw` / `com.nanoclaw`:
+ * setup/peer-cleanup.ts treats such units as peer NanoClaw installs.
  *
- * Declining changes nothing. The server binds 0.0.0.0 (NANOCLAW_OPENSHELL_UI_HOST
- * to change) with no app-level auth: it belongs behind the operator's
- * password-gated reverse proxy, with the port firewalled from everything else.
+ * The server binds 127.0.0.1 (NANOCLAW_OPENSHELL_UI_HOST to change) and has
+ * no login of its own: reach it over an SSH tunnel or a password-gated proxy.
  */
 import { execFileSync } from 'child_process';
 import fs from 'fs';
@@ -38,16 +27,20 @@ import { pathToFileURL } from 'url';
 
 import * as p from '@clack/prompts';
 
-import { readEnvFile } from '../src/env.js';
-import { getInstallSlug } from '../src/install-slug.js';
-import { log } from '../src/log.js';
-import { getNodePath, getPlatform, getServiceManager, isRoot } from './platform.js';
-import { upsertEnvVar } from './set-env.js';
-import { emitStatus } from './status.js';
+import { readEnvFile } from '../../../../src/env.js';
+import { getInstallSlug } from '../../../../src/install-slug.js';
+import { log } from '../../../../src/log.js';
+import { getNodePath, getPlatform, getServiceManager, isRoot } from '../../../../setup/platform.js';
+import { upsertEnvVar } from '../../../../setup/set-env.js';
+import { emitStatus } from '../../../../setup/status.js';
 
 export const DEFAULT_UI_PORT = 8790;
+
+function isLoopback(host: string): boolean {
+  return host === '127.0.0.1' || host === 'localhost' || host === '::1';
+}
 export const UI_PORT_KEY = 'NANOCLAW_OPENSHELL_UI_PORT';
-export const UI_SERVER_RELATIVE = path.join('.claude', 'skills', 'add-openshell', 'scripts', 'ui', 'server.ts');
+export const UI_SERVER_RELATIVE = path.join('.claude', 'skills', 'add-openshell-console', 'scripts', 'server.ts');
 
 /** One name for the service on every platform: systemd unit name and launchd label. */
 export function uiUnitName(projectRoot: string = process.cwd()): string {
@@ -192,7 +185,7 @@ export function parseUiArgs(args: string[]): { enable?: boolean; port?: number }
   return out;
 }
 
-export function isPortFree(port: number, host = '0.0.0.0'): Promise<boolean> {
+export function isPortFree(port: number, host = '127.0.0.1'): Promise<boolean> {
   return new Promise((resolve) => {
     const server = net.createServer();
     server.once('error', () => resolve(false));
@@ -394,7 +387,8 @@ export async function enableUi(
       : startSystemd(loc, renderUiUnit({ projectRoot, nodePath, homeDir, root: loc.root }), deps);
 
   const listening = await (deps.waitListening ?? waitListening)(port);
-  const host = (deps.hostname ?? os.hostname)();
+  const bind = readEnvFile(['NANOCLAW_OPENSHELL_UI_HOST'], projectRoot).NANOCLAW_OPENSHELL_UI_HOST || '127.0.0.1';
+  const host = isLoopback(bind) ? '127.0.0.1' : (deps.hostname ?? os.hostname)();
   return { loc, port, moved, listening, active, url: `http://${host}:${port}/` };
 }
 
@@ -469,11 +463,13 @@ export async function run(args: string[]): Promise<void> {
   if (gateway !== 'openshell')
     log.warn('This install does not use the openshell gateway; the credential panel will say so', { gateway });
   const result = await enableUi(projectRoot, parsed.port);
-  const bind = readEnvFile(['NANOCLAW_OPENSHELL_UI_HOST'], projectRoot).NANOCLAW_OPENSHELL_UI_HOST || '0.0.0.0';
+  const bind = readEnvFile(['NANOCLAW_OPENSHELL_UI_HOST'], projectRoot).NANOCLAW_OPENSHELL_UI_HOST || '127.0.0.1';
   const name = result.loc.kind === 'launchd' ? `launchd agent ${result.loc.label}` : `unit ${result.loc.unit}`;
   console.log(
-    `\nOpenShell setup UI: ${result.url}  (bound ${bind}:${result.port}, ${name})\n` +
-      'It has no login of its own — expose it only through your password-gated reverse proxy.\n',
+    `\nOpenShell console: ${result.url}  (bound ${bind}:${result.port}, ${name})\n` +
+      (isLoopback(bind)
+        ? `From another machine: ssh -L ${result.port}:127.0.0.1:${result.port} <this host>, then open ${result.url}\n`
+        : 'It has no login of its own: keep it behind a password-gated proxy and list the proxy host in NANOCLAW_OPENSHELL_UI_ALLOWED_HOSTS.\n'),
   );
   emitStatus('OPENSHELL_UI', {
     STATUS: result.active && result.listening ? 'success' : 'failed',
@@ -488,4 +484,8 @@ export async function run(args: string[]): Promise<void> {
     LOG: 'logs/openshell-ui.log',
   });
   if (!(result.active && result.listening)) process.exit(1);
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  await run(process.argv.slice(2));
 }

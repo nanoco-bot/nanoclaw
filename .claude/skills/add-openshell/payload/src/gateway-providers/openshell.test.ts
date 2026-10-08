@@ -48,16 +48,11 @@ describe('openshell gateway', () => {
     expect(lease.contribution).toEqual({ networkAccess: { endpoint: MODEL_HOST, target: { kind: 'host' } } });
   });
 
-  it('refuses a session, with a chat-facing message, when the Claude provider is missing', async () => {
+  it('refuses a session, naming the sign-in step, when the Claude provider is missing', async () => {
     run.mockRejectedValue(new Error('provider not found'));
-    const err = await provider()
-      .sessions.ensure(input(), new AbortController().signal)
-      .then(
-        () => null,
-        (e: unknown) => e,
-      );
-    expect((err as Error).message).toMatch(/no provider/);
-    expect((err as { userMessage: string }).userMessage).toMatch(/no Claude credential/);
+    await expect(provider().sessions.ensure(input(), new AbortController().signal)).rejects.toThrow(
+      /no provider .*--step gateway-auth/s,
+    );
   });
 
   it('refuses a runtime that enforces egress by topology (the Docker driver)', async () => {

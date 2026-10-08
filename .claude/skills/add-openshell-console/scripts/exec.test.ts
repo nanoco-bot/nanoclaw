@@ -6,7 +6,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { credentialScriptEnv } from './openshell-ops.js';
 import {
-  AUTH_SCRIPT,
   PROJECT_ROOT,
   execCapture,
   openShellChildEnv,
@@ -126,15 +125,21 @@ describe('realDeps (execFile mocked)', () => {
     expect(call.options.cwd).toBe(PROJECT_ROOT);
   });
 
-  it('runCredentialScript runs auth.ts claude under this node with the tsx loader and the given env', async () => {
+  it('runCredentialScript runs setup\'s gateway-auth step under this node with the tsx loader and the given env', async () => {
     const f = fakeExecFile({ stdout: 'stored' });
     const env = credentialScriptEnv({ kind: 'api-key', value: 'sk-ant-api03-FAKE' }, { PATH: '/bin' });
     await realDeps(PROJECT_ROOT, f.run).runCredentialScript(env);
     expect(f.calls[0].file).toBe(process.execPath);
-    expect(f.calls[0].args).toEqual(['--import', tsxLoaderUrl(PROJECT_ROOT), AUTH_SCRIPT, 'claude']);
+    expect(f.calls[0].args).toEqual([
+      '--import',
+      tsxLoaderUrl(PROJECT_ROOT),
+      path.join(PROJECT_ROOT, 'setup', 'index.ts'),
+      '--step',
+      'gateway-auth',
+    ]);
     expect(f.calls[0].options.env).toBe(env);
     expect(fs.existsSync(new URL(tsxLoaderUrl(PROJECT_ROOT)))).toBe(true);
-    expect(fs.existsSync(AUTH_SCRIPT)).toBe(true);
+    expect(fs.existsSync(path.join(PROJECT_ROOT, 'setup', 'index.ts'))).toBe(true);
   });
 });
 

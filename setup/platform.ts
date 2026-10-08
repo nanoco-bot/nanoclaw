@@ -15,23 +15,6 @@ export function getPlatform(): Platform {
   return 'unknown';
 }
 
-/** os.arch(): `x64`, `arm64`, … — of this Node process, so `x64` under Rosetta. */
-export function getArch(): string {
-  return os.arch();
-}
-
-/** Apple silicon hardware, even when this Node runs under Rosetta (where getArch() is `x64`). */
-export function isAppleSilicon(): boolean {
-  if (os.platform() !== 'darwin') return false;
-  try {
-    return (
-      execSync('sysctl -n hw.optional.arm64', { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] }).trim() === '1'
-    );
-  } catch {
-    return false;
-  }
-}
-
 export function isWSL(): boolean {
   if (os.platform() !== 'linux') return false;
   try {

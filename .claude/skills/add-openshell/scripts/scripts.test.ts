@@ -9,7 +9,7 @@ import type { OpenShellCli } from '../../../../src/drivers/openshell/cli.js';
 import { MODEL_PROFILE_ID, modelProviderName } from '../../../../src/drivers/openshell/model-provider.js';
 import { getInstallSlug } from '../../../../src/install-slug.js';
 import { detectInstalledOpenShell } from './detect.js';
-import { resolveBinary } from '../../../../setup/lib/resolve-binary.js';
+import { resolveBinary } from '../../../../setup/openshell/resolve-binary.js';
 import { preflight } from './preflight.js';
 
 const READY = { NANOCLAW_RUNTIME_DRIVER: 'openshell', OPENSHELL_BIN: '/opt/openshell/bin/openshell' };

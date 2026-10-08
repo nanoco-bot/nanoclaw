@@ -6,8 +6,8 @@
  *    driver uses), with colour off; stdout and stderr are both kept.
  *  - the central DB, opened once as a `tool` client, for agent groups and
  *    their sessions (read-only);
- *  - credential: the skill's `scripts/auth.ts claude`, as a child `node`
- *    process with tsx's loader (no pnpm on the service PATH required);
+ *  - credential: setup's `gateway-auth` step, as a child `node` process
+ *    with tsx's loader (no pnpm on the service PATH required);
  *  - restart: `groups-restart` on the HOST over its ncl socket.
  */
 import { execFile } from 'node:child_process';
@@ -15,25 +15,24 @@ import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-import { openShellGatewayEnv, openShellSettingsEnv } from '../../../../../src/drivers/openshell/config.js';
-import { sandboxName } from '../../../../../src/drivers/openshell/realize.js';
-import { policyFilePath } from '../../../../../src/drivers/openshell/policy-file.js';
-import { settingsFromEnv } from '../../../../../src/drivers/openshell/settings.js';
-import { getInstallSlug } from '../../../../../src/install-slug.js';
-import { readEnvFile } from '../../../../../src/env.js';
-import { SocketTransport } from '../../../../../src/cli/socket-client.js';
+import { openShellGatewayEnv, openShellSettingsEnv } from '../../../../src/drivers/openshell/config.js';
+import { sandboxName } from '../../../../src/drivers/openshell/realize.js';
+import { policyFilePath } from '../../../../src/drivers/openshell/policy-file.js';
+import { settingsFromEnv } from '../../../../src/drivers/openshell/settings.js';
+import { getInstallSlug } from '../../../../src/install-slug.js';
+import { readEnvFile } from '../../../../src/env.js';
+import { SocketTransport } from '../../../../src/cli/socket-client.js';
 import type { ExecResult } from './openshell-ops.js';
 import type { UiDeps } from './routes.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-export const SKILL_DIR = path.resolve(HERE, '..', '..');
+export const SKILL_DIR = path.resolve(HERE, '..');
 export const PROJECT_ROOT = path.resolve(SKILL_DIR, '..', '..', '..');
-export const AUTH_SCRIPT = path.join(SKILL_DIR, 'scripts', 'auth.ts');
 export const STATIC_DIR = path.join(HERE, 'public');
 
-/** `node --import <tsx loader> <skill>/scripts/auth.ts claude` — no pnpm on the service PATH needed. */
-export function credentialScriptArgs(loaderUrl: string, authScriptPath: string): string[] {
-  return ['--import', loaderUrl, authScriptPath, 'claude'];
+/** `node --import <tsx loader> setup/index.ts --step gateway-auth` — setup's own sign-in; no pnpm on the service PATH needed. */
+export function credentialScriptArgs(loaderUrl: string, projectRoot: string): string[] {
+  return ['--import', loaderUrl, path.join(projectRoot, 'setup', 'index.ts'), '--step', 'gateway-auth'];
 }
 
 /** Stable across tsx upgrades (node_modules/tsx is a symlink into the pnpm store). */
@@ -80,7 +79,7 @@ let dbReady: Promise<void> | undefined;
 /** Open the central DB once for this process, read-only use (agent groups and sessions). */
 function ensureDb(projectRoot: string): Promise<void> {
   dbReady ??= (async () => {
-    const { initDb } = await import('../../../../../src/db/connection.js');
+    const { initDb } = await import('../../../../src/db/connection.js');
     await initDb(path.join(projectRoot, 'data', 'v2.db'), { role: 'tool' });
   })().catch((err) => {
     dbReady = undefined; // retry on the next request
@@ -116,7 +115,7 @@ export function realDeps(projectRoot: string = PROJECT_ROOT, run: ExecFileLike =
       }
     },
     runCredentialScript(env) {
-      return execCapture(run, process.execPath, credentialScriptArgs(tsxLoaderUrl(projectRoot), AUTH_SCRIPT), {
+      return execCapture(run, process.execPath, credentialScriptArgs(tsxLoaderUrl(projectRoot), projectRoot), {
         env,
         cwd: projectRoot,
       });
@@ -134,12 +133,12 @@ export function realDeps(projectRoot: string = PROJECT_ROOT, run: ExecFileLike =
     },
     async listGroups() {
       await ensureDb(projectRoot);
-      const { getAllAgentGroups } = await import('../../../../../src/db/agent-groups.js');
+      const { getAllAgentGroups } = await import('../../../../src/db/agent-groups.js');
       return (await getAllAgentGroups()).map(({ id, name, folder }) => ({ id, name, folder }));
     },
     async groupSessions(agentGroupId) {
       await ensureDb(projectRoot);
-      const { getSessionsByAgentGroup } = await import('../../../../../src/db/sessions.js');
+      const { getSessionsByAgentGroup } = await import('../../../../src/db/sessions.js');
       return (await getSessionsByAgentGroup(agentGroupId)).map(({ id, status, container_status, created_at }) => ({
         id,
         status,
@@ -162,8 +161,9 @@ function checkCredentialsSync(root: string): { credentials: string; credentialSo
   return checkCredentialsImpl(root);
 }
 
-/** setup/verify.ts's checkCredentials — the same read-back verify uses. */
+/** The same read-back setup's verify uses (setup/openshell/verify.ts). */
 export async function preloadVerify(): Promise<void> {
-  const { checkCredentials } = await import('../../../../../setup/verify.js');
-  checkCredentialsImpl = (root) => checkCredentials(root);
+  const { openShellCredentials } = await import('../../../../setup/openshell/verify.js');
+  checkCredentialsImpl = (root) =>
+    openShellCredentials(root) ?? { credentials: 'missing', credentialSource: 'not-openshell:none' };
 }

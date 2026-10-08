@@ -4,7 +4,7 @@ import path from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('../src/log.js', () => ({ log: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() } }));
+vi.mock('../../../../src/log.js', () => ({ log: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() } }));
 
 import {
   DEFAULT_UI_PORT,
@@ -21,7 +21,7 @@ import {
   uiServiceKind,
   uiUnitLocation,
   uiUnitName,
-} from './openshell-ui.js';
+} from './service.js';
 
 let root: string;
 let home: string;
@@ -113,7 +113,7 @@ describe('enable / disable', () => {
     const calls: string[][] = [];
     const d = deps(calls);
     const result = await enableUi(root, 9001, d);
-    expect(result).toMatchObject({ port: 9001, listening: true, active: true, url: 'http://bob-lab:9001/' });
+    expect(result).toMatchObject({ port: 9001, listening: true, active: true, url: 'http://127.0.0.1:9001/' });
     expect(fs.readFileSync(d.loc.unitPath, 'utf8')).toContain(`WorkingDirectory=${root}`);
     expect(fs.readFileSync(path.join(root, '.env'), 'utf8')).toBe('NANOCLAW_OPENSHELL_UI_PORT=9001\n');
     expect(calls.filter((c) => c[0] !== 'is-active')).toEqual([
@@ -230,7 +230,7 @@ describe('macOS: launchd', () => {
     const calls: string[][] = [];
     const result = await enableUi(root, 8790, macDeps(calls));
     const loc = uiLaunchdLocation(root, { home });
-    expect(result).toMatchObject({ loc, port: 8790, active: true, listening: true, url: 'http://asafs-mac:8790/' });
+    expect(result).toMatchObject({ loc, port: 8790, active: true, listening: true, url: 'http://127.0.0.1:8790/' });
     expect(fs.readFileSync(loc.plistPath, 'utf8')).toContain(`<string>${root}/${UI_SERVER_RELATIVE}</string>`);
     expect(fs.readFileSync(path.join(root, '.env'), 'utf8')).toBe('NANOCLAW_OPENSHELL_UI_PORT=8790\n');
     expect(calls).toEqual([

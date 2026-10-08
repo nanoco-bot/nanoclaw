@@ -1,5 +1,5 @@
 /**
- * setup/install-openshell.sh, run for real under bash with a PATH of fakes:
+ * setup/openshell/install.sh, run for real under bash with a PATH of fakes:
  * `curl` serves a stand-in for NVIDIA's installer, so nothing is downloaded and
  * the real OpenShell (if this machine has one) is never seen.
  */
@@ -11,12 +11,13 @@ import { fileURLToPath } from 'node:url';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { StatusStream } from './lib/runner.js';
+import { StatusStream } from '../lib/runner.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const SCRIPT = path.join(here, 'install-openshell.sh');
-const PIN = (JSON.parse(fs.readFileSync(path.join(here, '..', 'versions.json'), 'utf8')) as Record<string, string>)
-  .openshell;
+const SCRIPT = path.join(here, 'install.sh');
+const PIN = (
+  JSON.parse(fs.readFileSync(path.join(here, '..', '..', 'versions.json'), 'utf8')) as Record<string, string>
+).openshell;
 
 /** Real tools the script (and the fake installer) use, linked into the fake PATH. */
 const TOOLS = ['bash', 'tr', 'grep', 'sed', 'head', 'cat', 'dirname', 'chmod'];
@@ -88,7 +89,7 @@ beforeEach(() => {
 });
 afterEach(() => fs.rmSync(tmp, { recursive: true, force: true }));
 
-describe('setup/install-openshell.sh', () => {
+describe('setup/openshell/install.sh', () => {
   it('pins a release in versions.json', () => {
     expect(PIN).toMatch(/^v\d+\.\d+\.\d+$/);
   });
@@ -218,11 +219,11 @@ describe('setup/install-openshell.sh', () => {
 
   it('fails clearly when versions.json has no pin and OPENSHELL_VERSION is unset', () => {
     const copy = path.join(tmp, 'tree');
-    fs.mkdirSync(path.join(copy, 'setup'), { recursive: true });
-    fs.copyFileSync(SCRIPT, path.join(copy, 'setup', 'install-openshell.sh'));
+    fs.mkdirSync(path.join(copy, 'setup', 'openshell'), { recursive: true });
+    fs.copyFileSync(SCRIPT, path.join(copy, 'setup', 'openshell', 'install.sh'));
     fs.writeFileSync(path.join(copy, 'versions.json'), '{\n  "agent-image": "x@sha256:0"\n}\n');
     installerWill('install');
-    const r = runScript({}, path.join(copy, 'setup', 'install-openshell.sh'));
+    const r = runScript({}, path.join(copy, 'setup', 'openshell', 'install.sh'));
     expect(r.fields.STATUS).toBe('failed');
     expect(r.fields.ERROR).toMatch(/no "openshell" pin/);
     expect(r.curl).toBe('');

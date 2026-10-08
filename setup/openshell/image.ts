@@ -16,14 +16,15 @@
  *   - container/build.sh after every rebuild (`--if-configured`).
  * `src/config.ts` (resolveContainerImage) selects it on the openshell driver.
  *
- *   pnpm exec tsx setup/lib/openshell-image.ts [--if-configured]
+ *   pnpm exec tsx setup/openshell/image.ts [--if-configured]
  */
 import { spawnSync } from 'child_process';
 import { readFileSync } from 'fs';
 import path from 'path';
 import { pathToFileURL } from 'url';
 
-import { getDefaultContainerImage, getOpenShellContainerImage } from '../../src/install-slug.js';
+import { openShellImage as getOpenShellContainerImage } from '../../src/drivers/openshell/image.js';
+import { getDefaultContainerImage } from '../../src/install-slug.js';
 
 export const OPENSHELL_WORKDIR = '/sandbox';
 

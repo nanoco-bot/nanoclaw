@@ -19,11 +19,6 @@ import { MODEL_HOST, modelProviderName } from '../drivers/openshell/model-provid
 
 import { registerGatewayProvider } from './gateway-provider-registry.js';
 
-/** An error whose `userMessage` core shows in the chat instead of a generic failure. */
-function userFacingError(message: string, userMessage: string): Error & { userMessage: string } {
-  return Object.assign(new Error(message), { userMessage });
-}
-
 /** Whether OpenShell holds this install's Claude provider. */
 async function modelProviderExists(name: string): Promise<boolean> {
   try {
@@ -49,9 +44,9 @@ registerGatewayProvider({
       }
       const provider = modelProviderName(INSTALL_SLUG);
       if (!(await modelProviderExists(provider))) {
-        throw userFacingError(
-          `OpenShell has no provider '${provider}' with this install's Claude credential; refusing session`,
-          "I can't reply yet: no Claude credential is configured for this NanoClaw install. The operator needs to run setup's sign-in step (`pnpm exec tsx setup/index.ts --step gateway-auth`).",
+        throw new Error(
+          `OpenShell has no provider '${provider}' with this install's Claude credential; refusing the session. ` +
+            'Run the sign-in step: pnpm exec tsx setup/index.ts --step gateway-auth',
         );
       }
       return { contribution: { networkAccess: { endpoint: MODEL_HOST, target: { kind: 'host' } } } };

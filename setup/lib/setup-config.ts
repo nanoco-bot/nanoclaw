@@ -122,22 +122,6 @@ export const CONFIG: Entry[] = [
     type: 'string',
   },
   {
-    key: 'openshellUi',
-    label: 'OpenShell setup web UI',
-    help: 'With OpenShell enabled: also start the operator web UI as a background service (no login of its own). Default: off.',
-    surface: 'flag',
-    type: 'boolean',
-  },
-  {
-    key: 'openshellUiPort',
-    label: 'OpenShell setup UI port',
-    help: 'With --openshell-ui: the port it binds (default 8790; the next free one if taken).',
-    surface: 'flag',
-    type: 'integer',
-    min: 1,
-    max: 65535,
-  },
-  {
     key: 'templatePath',
     label: 'Agent template',
     help: 'Create or update an agent from a local template ref under templates/ (for example, sales/sdr).',

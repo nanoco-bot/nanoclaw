@@ -5,9 +5,9 @@
  * file (src/drivers/openshell/policy-file.ts); these commands change what is
  * running now.
  */
-import type { EgressRule } from '../../../../../src/drivers/openshell/policy.js';
-import type { ModelCredentialKind } from '../../../../../src/drivers/openshell/model-provider.js';
-import { PROVIDER_NAME_RE } from '../../../../../src/drivers/openshell/realize.js';
+import type { EgressRule } from '../../../../src/drivers/openshell/policy.js';
+import type { ModelCredentialKind } from '../../../../src/drivers/openshell/model-provider.js';
+import { PROVIDER_NAME_RE } from '../../../../src/drivers/openshell/realize.js';
 
 export interface ExecResult {
   code: number | null;

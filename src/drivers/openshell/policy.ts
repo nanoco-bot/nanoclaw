@@ -19,13 +19,13 @@
  */
 import {
   deniedByPolicy,
-  hasUnsafeTerminalText,
   specInvalid,
   type ContainerSpec,
   type MountClass,
   type MountSpec,
   type SessionSpec,
 } from '../types.js';
+import { hasUnsafeTerminalText } from './host-mount.js';
 
 /** The base-system grant verified to let binaries exec inside a v0.1.2 sandbox. */
 export const DEFAULT_BASE_READ_ONLY: readonly string[] = ['/usr', '/bin', '/lib', '/lib64', '/etc'];
