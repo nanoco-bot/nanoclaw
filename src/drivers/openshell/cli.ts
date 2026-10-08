@@ -4,10 +4,9 @@
  * Why the CLI and not `@nvidia/openshell-sdk`: the TypeScript SDK exists
  * (README SDK table, `sdk/typescript`), but at v0.1.2 it is distributed only via
  * GitHub Packages, which requires a `read:packages` token + `.npmrc` on every
- * machine that installs this overlay — a credential in the install path of a
- * host whose whole design keeps credentials out of it. The CLI is also the
- * surface that was verified end to end against the lab gateway (bind mounts via
- * `--driver-config-json`). Keeping every gateway call behind this interface
+ * machine that installs NanoClaw — a credential in the install path of a host
+ * whose whole design keeps credentials out of it. Keeping every gateway call
+ * behind this interface
  * means swapping in the SDK later is a one-file change.
  *
  * Async on purpose (unlike NanoClaw's sync docker `Cli`): the polling watch

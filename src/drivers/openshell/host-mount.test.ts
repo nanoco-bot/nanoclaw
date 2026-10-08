@@ -105,7 +105,7 @@ describe('prepare() runs the symlink check after validateSpec, before anything i
   it('a clean spec passes and every source component was inspected', async () => {
     const seen: string[] = [];
     const cli = new FakeOpenShellCli();
-    cli.rules = [{ match: /^sandbox get /, fails: 'not found' }];
+    cli.rules = [{ match: /^sandbox get /, fails: 'message: "sandbox not found"' }];
     const driver = new OpenShellSessionDriver({
       ...FIXTURE_POLICY,
       cli,

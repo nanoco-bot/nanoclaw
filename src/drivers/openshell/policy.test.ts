@@ -1,8 +1,7 @@
 /**
  * SessionSpec -> OpenShell policy compilation. Pure translation; no gateway, no Docker.
  *
- * Inputs come from NanoClaw's own shared driver fixture (vendored
- * `spec-fixture.ts`) — the same spec its conformance suite drives through the
+ * Inputs come from the shared driver fixture (`../spec-fixture.ts`) — the same spec its conformance suite drives through the
  * Docker driver — so these assertions are about the input core actually composes.
  */
 import { describe, expect, it } from 'vitest';

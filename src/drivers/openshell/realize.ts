@@ -18,7 +18,7 @@ import {
   type SessionPhase,
   type SessionSpec,
   type SessionStatus,
-} from './seam.js';
+} from '../types.js';
 import { OpenShellCliError } from './cli.js';
 import type { DriverConfig } from './policy.js';
 
@@ -209,10 +209,15 @@ export function isTerminalPhase(phase: string | undefined): boolean {
 
 // ---------- errors ----------
 
-/** A `get`/`delete` on a name the gateway does not know. */
+/**
+ * The SANDBOX does not exist (OpenShell: `message: "sandbox not found"`).
+ * Deliberately narrow: other missing things — a provider, an image, an unknown
+ * gateway — are configuration errors, and reading them as "sandbox gone" would
+ * make every session look stopped.
+ */
 export function isNotFound(error: unknown): boolean {
   const msg = error instanceof Error ? error.message : String(error);
-  return /not ?found|does not exist|no such sandbox/i.test(msg);
+  return /\bsandbox(?: '[^']*')? not found\b|\bno such sandbox\b/i.test(msg);
 }
 
 /** Create on a name the gateway already holds (CLI: AlreadyExists status). */
@@ -225,16 +230,11 @@ const GATEWAY_CONFIG_HINT =
   'This is OpenShell gateway configuration (an operator fix, not a driver bug). Gateway said: ';
 
 /**
- * Raw runtime errors never cross the seam — except where the gateway is
- * telling the OPERATOR what to change, which is passed through as the
- * denied-by-policy detail together with the exact setting to flip.
- */
-/**
  * The part of CLI stderr that explains the failure. The CLI prints advisory
  * warnings first (one per credential-looking `--env`, which NanoClaw's
  * gateway lane legitimately produces) and its `Error:` block last — so the
- * head of stderr is the wrong place to look. Found live: with a few
- * warnings, the real error starts well past 500 characters.
+ * head of stderr is the wrong place to look: with a few warnings, the real
+ * error starts well past 500 characters.
  */
 export function cliErrorSummary(raw: string): string {
   const at = raw.lastIndexOf('Error:');
@@ -246,6 +246,11 @@ export function cliErrorSummary(raw: string): string {
     .slice(0, 500);
 }
 
+/**
+ * Raw runtime errors never cross the seam — except where the gateway is
+ * telling the OPERATOR what to change, which is passed through as the
+ * denied-by-policy detail together with the exact setting to flip.
+ */
 export function normalizeOpenShellError(error: unknown, now: () => number = Date.now): SessionFailureError {
   const msg = cliErrorSummary(error instanceof Error ? error.message : String(error));
   const missingProvider = /provider '([^']+)' not found/i.exec(msg);
@@ -281,7 +286,7 @@ export function normalizeOpenShellError(error: unknown, now: () => number = Date
   }
   if (/resource admission|not admitted|admission provenance/i.test(msg)) {
     return deniedByPolicy(
-      `the OpenShell gateway's resource admission refused the sandbox's mounts; configure [openshell.drivers.docker.resource_admission] (label-based admission, or enabled = false for a POC). ${GATEWAY_CONFIG_HINT}${msg}`,
+      `the OpenShell gateway's resource admission refused the sandbox's mounts; configure [openshell.drivers.docker.resource_admission] (label-based admission, or enabled = false). ${GATEWAY_CONFIG_HINT}${msg}`,
     );
   }
   const code = error instanceof OpenShellCliError ? error.exitCode : undefined;

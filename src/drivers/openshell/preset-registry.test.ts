@@ -116,9 +116,9 @@ describe('loadPreset / listPresets', () => {
     expect(() => listPresets(d)).toThrow(/broken\.yaml/);
   });
 
-  it('the shipped presets all load strictly (github, crm)', () => {
+  it('the shipped presets all load strictly', () => {
     const shipped = listPresets();
-    expect(shipped.map((p) => p.name)).toEqual(expect.arrayContaining(['github', 'crm']));
+    expect(shipped.map((p) => p.name)).toEqual(['github']);
     for (const p of shipped) expect(p.version).toBeGreaterThanOrEqual(1);
     expect(fs.existsSync(path.join(presetsDir(), 'github.yaml'))).toBe(true);
   });

@@ -1,6 +1,6 @@
 /**
- * The registration seam: importing the overlay module registers 'openshell'
- * in NanoClaw's (vendored) driver registry, and the factory builds this driver
+ * Registration: importing ./register.js registers 'openshell' in the driver
+ * registry, and the factory builds this driver
  * from the MountPolicy core hands it.
  */
 import { describe, expect, it } from 'vitest';
@@ -10,7 +10,7 @@ import { FIXTURE_POLICY } from '../spec-fixture.js';
 import { OpenShellSessionDriver } from './driver.js';
 import { settingsFromEnv } from './settings.js';
 
-describe('overlay registration', () => {
+describe('registration', () => {
   it("registers kind 'openshell' on import", async () => {
     expect(getSessionDriverFactory('openshell')).toBeUndefined();
     await import('./register.js');
