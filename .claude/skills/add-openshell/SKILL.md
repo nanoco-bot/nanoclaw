@@ -61,6 +61,8 @@ The sign-in step (`scripts/auth.ts`) stores the Claude credential in OpenShell a
 
 Inside a sandbox, `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY` holds an `openshell:resolve:env:…` placeholder; OpenShell swaps in the real value on requests to `api.anthropic.com` from Claude Code, node or bun. Only the Claude agent provider is supported. Without the provider, sessions are refused and the chat is told why.
 
+OpenShell refuses to forward a model request whose body contains a placeholder (`403 … body credential rewriting is disabled`), so an agent that prints a credential variable cannot reach the model again in that conversation; `/clear` starts a fresh one. The agent guidance tells agents never to print credential variables.
+
 ## Policy operations
 
 OpenShell allow and deny decisions happen in OpenShell, not in NanoClaw approval cards. The operator reviews them on the host with `ncl openshell-policy-list`, `-view`, `-approve`, `-reject` and `-add-rule`. Live proposals cover network rules only. Filesystem and process policy is fixed when a sandbox starts.

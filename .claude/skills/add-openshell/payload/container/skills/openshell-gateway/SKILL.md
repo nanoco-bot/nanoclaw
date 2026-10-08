@@ -23,6 +23,14 @@ API. Do not change it, and never ask the user for an API key. Other services'
 keys reach you the same way, as placeholders in their usual variables, once an
 operator attaches them.
 
+**Never print a credential variable or its placeholder** — no `env`,
+`printenv`, `echo $SOME_KEY`, or `cat /proc/*/environ`. Use the variable
+inside the command that needs it (`curl -H "Authorization: Bearer $KEY" …`)
+without showing it. OpenShell refuses to forward any model request whose body
+contains a placeholder, so one printed placeholder stops your model access for
+the rest of this conversation, until the user sends `/clear`. To check whether
+a key is present, test it without printing it: `[ -n "$KEY" ] && echo set`.
+
 ## When a request is refused
 
 A connection that is refused, reset, or answered with an OpenShell policy
